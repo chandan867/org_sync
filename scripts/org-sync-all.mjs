@@ -201,12 +201,22 @@ async function writeGlobalIndexes(options, runSummary) {
     await writeJson(path.join(orgsDir, `${org.name}.json`), org);
   }
 
+  // Merge with existing index so --include runs don't drop orgs not in this batch
+  const existingIndex = await readJsonIfExists(path.join(options.globalDir, "index.json")).catch(() => null);
+  const existingOrgs = (existingIndex?.orgs || []).filter(
+    (o) => !runSummary.orgs.some((r) => r.name === o.name)
+  );
+  const currentOrgs = runSummary.orgs.map((org) => ({
+    name: org.name, path: org.path, status: org.status,
+    summary: org.signals?.summary || null, reportPath: org.reportPath || null,
+  }));
+
   const index = {
     schemaVersion: 1,
     generatedAt: runSummary.generatedAt,
     projectsRoot: options.projectsRoot,
     latestDailyPath: path.join(dailyDir, `${date}.json`),
-    orgs: runSummary.orgs.map((org) => ({ name: org.name, path: org.path, status: org.status, summary: org.signals?.summary || null, reportPath: org.reportPath || null })),
+    orgs: [...currentOrgs, ...existingOrgs],
   };
   await writeJson(path.join(options.globalDir, "index.json"), index);
   await writeJson(path.join(dailyDir, `${date}.json`), runSummary);
