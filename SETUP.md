@@ -1,33 +1,31 @@
 # Setup Guide
 
-First-time setup from a fresh clone. Takes about 5 minutes.
+First-time setup from a fresh clone. Takes about 10 minutes.
 
 ## 1. Prerequisites
 
 ```bash
-node --version   # needs 18+
-npm --version
+node --version    # needs 18+
 git --version
-opencode --help  # OpenCode CLI — for LLM synthesis
+opencode --help   # OpenCode CLI — install from https://opencode.ai
 ```
 
-GitNexus is optional but recommended for blast-radius analysis:
+GitNexus is optional (structural impact analysis):
 
 ```bash
 npx gitnexus --version
 ```
 
-macOS is required only for the LaunchAgent auto-run feature. Everything else works on Linux too.
+## 2. Clone
 
-## 2. Clone into your projects folder
-
-Clone next to your `*_org` folders — not inside one:
+Clone into your projects folder — next to your `*_org` folders, not inside one:
 
 ```bash
-cd ~/projects   # or wherever your *_org folders live
+cd ~/projects
 git clone https://github.com/chandan867/org_sync.git org-sync-tools
 cd org-sync-tools
 npm install
+npm link
 ```
 
 Your folder should look like:
@@ -42,59 +40,56 @@ Your folder should look like:
   org-sync-tools/    ← you are here
 ```
 
-## 3. Link CLI commands (optional but recommended)
-
-```bash
-npm link
-```
-
-Verify:
+Verify the CLI commands are available:
 
 ```bash
 org-sync --help
 org-sync-all --help
-founder-sync --help
 org-dashboard --help
 ```
 
-If you skip `npm link`, use `npm run` equivalents instead:
+## 3. Dry run
+
+Preview what will happen without writing anything:
 
 ```bash
-npm run org:sync -- --help
-npm run org:sync:all -- --help
-npm run founder:sync -- --help
-npm run dashboard -- --help
+cd ~/projects
+org-sync-all --dry-run
 ```
 
-## 4. Set your projects root (optional)
+You should see planned commands for each `*_org` folder found.
 
-By default, every script uses `process.cwd()` as the projects root. If you always run from a different folder, set it permanently:
+## 4. First sync (with LLM)
 
 ```bash
-# add to ~/.zshrc or ~/.bashrc
-export ORG_SYNC_PROJECTS_ROOT="$HOME/projects"
+cd ~/projects
+org-sync-all
 ```
 
-You can also pass it per-command: `org-sync-all --projects-root ~/projects`
+This runs for each org:
+1. Collects git changes, maps product flows and risk signals
+2. Calls OpenCode to synthesize a founder report
+3. Calls OpenCode 6 more times to generate agency briefs (Product, GTM, Sales, Marketing, Engineering, Customer Success)
+4. Runs `founder-sync` to write vision notes
 
-## 5. Prepare your org folders
+**Takes 5–15 minutes** depending on how many repos have changes. Each org makes 7 OpenCode calls.
 
-Each `*_org` folder needs immediate child Git repos (not nested deeper):
+## 5. Open the dashboard
 
-```text
-upandup_org/
-  mobile-app/.git     ✓
-  backend/.git        ✓
-  nested/deep/repo/   ✗ (not discovered)
+```bash
+org-dashboard &
+open http://localhost:3877
 ```
 
-No other setup is needed. The `vision/` folder and all report directories are created automatically on first sync.
+- Home page: cross-org summary (repos changed, critical flows, high-risk)
+- Click an org to see the briefing, agency briefs, and repo signals
+- The dashboard is read-only — safe to leave running
 
-## 6. Customize product rules (recommended)
+## 6. Add per-org product rules (recommended)
 
-The default product-flow rules cover generic patterns (auth, payments, core user flow, notifications, integrations, admin). For better signal quality, add rules specific to your product.
+The default rules cover generic patterns. Add rules specific to your product for better signal quality.
 
-Create or edit `<org>/vision/product-overview.md` and add fenced blocks:
+Create `<org>/vision/product-overview.md`:
 
 ````markdown
 # My Product — Overview
@@ -105,10 +100,10 @@ Brief description of what the product does.
 
 ```org-sync:product-flows
 [
-  { "id": "core-checkout", "label": "Checkout Flow", "severity": "critical",
+  { "id": "checkout", "label": "Checkout Flow", "severity": "critical",
     "pathPatterns": ["checkout", "cart", "payment", "order"],
     "textPatterns": ["checkout", "cart", "payment intent"] },
-  { "id": "onboarding", "label": "User Onboarding", "severity": "critical",
+  { "id": "onboarding", "label": "User Onboarding", "severity": "high",
     "pathPatterns": ["onboard", "signup", "register", "invite"],
     "textPatterns": ["onboarding", "signup", "invite"] }
 ]
@@ -127,103 +122,44 @@ Brief description of what the product does.
 ```
 ````
 
-Rules use case-insensitive regex patterns. If the blocks are absent, generic defaults are used — the tool works fine without custom rules.
+Run the sync again after adding rules — it picks them up automatically, no restart needed.
 
-## 7. First dry run
+## Daily from here on
 
-Preview what will happen without writing anything:
-
-```bash
-cd ~/projects
-org-sync-all --dry-run
-```
-
-Or for one org:
+Two commands, from `~/projects`:
 
 ```bash
-org-sync-all --include upandup_org --dry-run
+org-sync-all
 ```
-
-Expected output: planned commands for each org, no files written.
-
-## 8. First real sync
-
-Run one org without OpenCode first (fast, no API calls):
-
-```bash
-org-sync-all --include upandup_org --org-args '--no-pull --no-llm'
-```
-
-This writes a structured report, agency briefs, and founder signals without calling OpenCode. Check the output:
-
-```bash
-ls upandup_org/org-sync-reports/
-```
-
-Then open the dashboard to see it:
+Syncs all orgs, generates LLM reports and all 6 agency briefs. Run this every morning.
 
 ```bash
 org-dashboard &
 open http://localhost:3877
 ```
+Opens the dashboard. The dashboard always shows the latest LLM-completed run automatically.
 
-## 9. Full sync with OpenCode
+---
 
-Once you've confirmed the structure looks right:
+## Optional: auto-run on macOS
 
-```bash
-org-sync-all --include upandup_org
-```
-
-Default behavior:
-- No remote pull (`--no-pull` is the default in `org-sync-all`)
-- OpenCode enabled — synthesises a founder-facing report
-- `founder-sync` runs after each org to write vision notes
-
-To pull before syncing:
+Install a LaunchAgent that runs the sync once per day automatically:
 
 ```bash
-org-sync-all --include upandup_org --org-args '--since "1 day ago"'
-```
-
-## 10. Open the dashboard
-
-```bash
-org-dashboard
-```
-
-Navigate to:
-- `http://localhost:3877` — home page with cross-org metrics
-- `http://localhost:3877/orgs/upandup_org` — org-level digest, agency briefs, signals
-
-The dashboard is read-only — it only reads generated artifacts, never runs git or LLM calls.
-
-## 11. Set up auto-run on macOS
-
-Install a once-per-day LaunchAgent that runs the sync automatically:
-
-```bash
-# preview what will be installed
-npm run org:auto:install -- --dry-run
-
-# install
 npm run org:auto:install
-
-# verify it loaded
-launchctl list | grep org-sync
+launchctl list | grep org-sync   # verify it loaded
 ```
 
-Force a run now to verify:
+Force a run now:
 
 ```bash
 npm run org:auto:run -- --force
 ```
 
-Check logs if something is wrong:
+Check logs:
 
 ```bash
-cat "$HOME/projects/.org-intel-global/launchd.err.log"
-cat "$HOME/projects/.org-intel-global/logs/$(date +%Y-%m-%d).log"
+cat ~/projects/.org-intel-global/launchd.err.log
 ```
 
 Uninstall:
@@ -232,76 +168,53 @@ Uninstall:
 npm run org:auto:uninstall
 ```
 
-## 12. Weekly summary
-
-Generate a 7-day rollup for one org from existing daily reports:
+## Optional: weekly summary
 
 ```bash
 org-weekly-summary --org-root ~/projects/upandup_org
 ```
 
-Or run weekly after every daily sync automatically:
+Or run it automatically after every daily sync:
 
 ```bash
 org-sync-all --weekly
 ```
 
-## 13. Cleanup old runs
+## Optional: clean up old runs
 
-The cleanup script keeps one canonical run per day and removes duplicates:
+Keep one run per day, delete duplicates:
 
 ```bash
-# preview (dry run is the default)
-npm run org:cleanup -- --include upandup_org
-
-# apply
-npm run org:cleanup -- --include upandup_org --no-dry-run
+npm run org:cleanup -- --include upandup_org             # preview
+npm run org:cleanup -- --include upandup_org --no-dry-run  # apply
 ```
 
-## Common issues
+---
 
-### Commands not found after `npm link`
+## Troubleshooting
 
+**Commands not found after `npm link`**
 ```bash
 npm link
-hash -r   # reload shell PATH cache
+hash -r
 ```
 
-Or use `npm run org:sync -- --help` instead of the linked binary.
+**No orgs found**
+- Folders must end in `_org`
+- Run from the projects root, or set `ORG_SYNC_PROJECTS_ROOT=~/projects`
 
-### No orgs found
+**No repos found in an org**
+- Repos must be immediate children of the `*_org` folder (no nesting)
+- Check: `org-sync --dry-run --org-root ~/projects/upandup_org`
 
-- Make sure folders end in `_org`
-- Run from the projects root, or set `ORG_SYNC_PROJECTS_ROOT`
-- Check with: `ls ~/projects | grep _org`
+**OpenCode fails**
+- Run `opencode --help` to verify it's installed
+- Use `--no-llm` to skip OpenCode: `org-sync-all --org-args '--no-llm'`
 
-### No repos found in an org
+**Dashboard shows no data**
+- Run a sync first: `org-sync-all`
+- Restart the dashboard after syncing
 
-- Repos must be immediate children of the `*_org` folder with a `.git` directory
-- Run `org-sync --dry-run --org-root ~/projects/upandup_org` to see what's discovered
-
-### Dashboard shows no data
-
-Run a sync first, then restart the dashboard:
-
-```bash
-org-sync-all --include upandup_org --org-args '--no-llm'
-org-dashboard
-```
-
-### OpenCode fails
-
-```bash
-opencode --help   # verify it's installed
-```
-
-Use `--no-llm` to skip OpenCode and get the deterministic structured report instead.
-
-### Auto-run LaunchAgent not firing
-
-Check:
-1. `launchctl list | grep org-sync` — should show the label
-2. `cat ~/projects/.org-intel-global/launchd.err.log`
-3. Verify the projects root path in the plist: `cat ~/Library/LaunchAgents/dev.upandup.org-sync-auto.plist`
-
-Re-install if needed: `npm run org:auto:uninstall && npm run org:auto:install`
+**Dashboard shows old run**
+- The dashboard picks the latest LLM-completed run automatically
+- If you see a stale run, check that `run-summary.json` exists in the newest directory under `<org>/org-sync-reports/`
