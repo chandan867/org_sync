@@ -201,24 +201,7 @@ async function writeGlobalIndexes(options, runSummary) {
     await writeJson(path.join(orgsDir, `${org.name}.json`), org);
   }
 
-  // Merge with existing index so --include runs don't drop orgs not in this batch
-  const existingIndex = await readJsonIfExists(path.join(options.globalDir, "index.json")).catch(() => null);
-  const existingOrgs = (existingIndex?.orgs || []).filter(
-    (o) => !runSummary.orgs.some((r) => r.name === o.name)
-  );
-  const currentOrgs = runSummary.orgs.map((org) => ({
-    name: org.name, path: org.path, status: org.status,
-    summary: org.signals?.summary || null, reportPath: org.reportPath || null,
-  }));
-
-  const index = {
-    schemaVersion: 1,
-    generatedAt: runSummary.generatedAt,
-    projectsRoot: options.projectsRoot,
-    latestDailyPath: path.join(dailyDir, `${date}.json`),
-    orgs: [...currentOrgs, ...existingOrgs],
-  };
-  await writeJson(path.join(options.globalDir, "index.json"), index);
+  // Write daily snapshot (org-sync.mjs already updates index.json per-org; just archive the batch here)
   await writeJson(path.join(dailyDir, `${date}.json`), runSummary);
 }
 
@@ -318,7 +301,7 @@ async function main() {
   }
   if (!options.dryRun) {
     await writeGlobalIndexes(options, runSummary);
-    console.log(`\nGlobal index written: ${path.join(options.globalDir, "index.json")}`);
+    console.log(`\nDaily snapshot: ${path.join(options.globalDir, "daily")}`);
   }
   const failed = runSummary.orgs.filter((org) => !["completed", "org-synced", "planned", "founder-input-required"].includes(org.status) || org.weekly?.ok === false);
   if (failed.length) throw new Error(`One or more orgs failed: ${failed.map((org) => `${org.name}=${org.status}`).join(", ")}`);

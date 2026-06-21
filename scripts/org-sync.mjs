@@ -1497,6 +1497,8 @@ async function main() {
 
   await writeJson(path.join(options.outputDir, "run-summary.json"), runSummary);
 
+  await updateGlobalIndex(options, runSummary, reportPath, founderSignals);
+
   let notesResult = null;
   if (options.notes) {
     notesResult = await writeObsidianNotes(runSummary, reportPath, options);
@@ -1511,6 +1513,39 @@ async function main() {
   if (runSummary.llm.status !== "completed") {
     console.log(`OpenCode status: ${runSummary.llm.status}${runSummary.llm.error ? ` (${runSummary.llm.error})` : ""}`);
     console.log(`Manual prompt: ${orgPromptPath}`);
+  }
+}
+
+async function updateGlobalIndex(options, runSummary, reportPath, founderSignals) {
+  const projectsRoot = path.dirname(options.orgRoot);
+  const globalDir = path.join(projectsRoot, ".org-intel-global");
+  const indexPath = path.join(globalDir, "index.json");
+  const orgName = path.basename(options.orgRoot);
+
+  let existing = { orgs: [] };
+  try { existing = JSON.parse(await readFile(indexPath, "utf8")); } catch {}
+
+  const orgEntry = {
+    name: orgName,
+    path: options.orgRoot,
+    status: "org-synced",
+    summary: founderSignals.summary || null,
+    reportPath: path.relative(projectsRoot, reportPath),
+  };
+
+  const otherOrgs = (existing.orgs || []).filter((o) => o.name !== orgName);
+  const index = {
+    schemaVersion: 1,
+    generatedAt: runSummary.generatedAt,
+    projectsRoot,
+    orgs: [orgEntry, ...otherOrgs],
+  };
+
+  try {
+    await mkdir(globalDir, { recursive: true });
+    await writeFile(indexPath, `${JSON.stringify(index, null, 2)}\n`, "utf8");
+  } catch (err) {
+    console.warn(`Warning: could not update global index: ${err.message}`);
   }
 }
 
