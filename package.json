@@ -1,0 +1,28 @@
+{
+  "name": "upandup-org-sync-tools",
+  "version": "0.1.0",
+  "private": true,
+  "bin": {
+    "founder-sync": "scripts/founder-sync.mjs",
+    "org-sync": "scripts/org-sync.mjs",
+    "org-sync-auto": "scripts/org-sync-auto-runner.mjs",
+    "org-sync-all": "scripts/org-sync-all.mjs",
+    "org-dashboard": "scripts/org-dashboard.mjs",
+    "org-sync-cleanup": "scripts/org-sync-cleanup.mjs",
+    "org-weekly-summary": "scripts/org-weekly-summary.mjs"
+  },
+  "scripts": {
+    "founder:sync": "node scripts/founder-sync.mjs",
+    "org:sync": "node scripts/org-sync.mjs",
+    "org:sync:all": "node scripts/org-sync-all.mjs",
+    "dashboard": "node scripts/org-dashboard.mjs",
+    "org:auto:run": "node scripts/org-sync-auto-runner.mjs",
+    "org:cleanup": "node scripts/org-sync-cleanup.mjs",
+    "org:auto:install": "node scripts/org-sync-auto-install.mjs",
+    "org:auto:uninstall": "node scripts/org-sync-auto-uninstall.mjs",
+    "org:weekly": "node scripts/org-weekly-summary.mjs"
+  },
+  "dependencies": {
+    "headroom-ai": "^0.22.4"
+  }
+}
