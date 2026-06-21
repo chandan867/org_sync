@@ -5,7 +5,7 @@ import { readdir, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 
-const DEFAULT_PROJECTS_ROOT = "/Users/chandan/Desktop/projects";
+const DEFAULT_PROJECTS_ROOT = process.env.ORG_SYNC_PROJECTS_ROOT || process.env.ORG_SYNC_AUTO_PROJECTS_ROOT || process.cwd();
 const TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z$/;
 const LOCAL_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const SAFE_CONTENT_FILES = ["report.md", "run-summary.json"];

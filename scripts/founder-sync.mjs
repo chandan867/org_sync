@@ -5,8 +5,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
-
-const DEFAULT_AGENTS_ROOT = "/Users/chandan/Desktop/projects/agency-agents";
+import { resolveAgentsRoot } from "./lib/org-config.mjs";
 const DEFAULT_MAX_AGENT_BYTES = 120_000;
 const MAX_CONTINUITY_FILE_BYTES = 40_000;
 const CONTINUITY_DAYS = 7;
@@ -50,7 +49,7 @@ Notes:
 function parseArgs(argv) {
   const options = {
     orgRoot: process.cwd(),
-    agentsRoot: DEFAULT_AGENTS_ROOT,
+    agentsRoot: null,
     questionsPath: null,
     orgSyncReport: null,
     date: null,
@@ -116,6 +115,10 @@ function parseArgs(argv) {
 
   options.visionDir = path.join(options.orgRoot, "vision");
   options.questionsPath ??= path.join(options.visionDir, "questions.md");
+  // Resolve agentsRoot: explicit CLI value already set, otherwise derive from parent of orgRoot
+  if (!options.agentsRoot) {
+    options.agentsRoot = resolveAgentsRoot(null, path.dirname(options.orgRoot));
+  }
   const now = new Date();
   options.generatedAt = now.toISOString();
   options.timestamp = timestampForPath(now);
@@ -965,20 +968,16 @@ async function main() {
   }
 
   if (requiredMissing.length) {
-    console.log("Missing required founder input templates:");
+    console.log("First-run: created founder input template files (fill these for better results):");
     for (const item of requiredMissing) console.log(`- ${item.path}${options.dryRun ? " (would create)" : " (created)"}`);
-    console.log("Fill the templates and rerun founder-sync.");
-    return;
+    console.log("Continuing with template defaults. Update vision/ files and rerun for richer output.");
+    // Do NOT return — proceed so the first run still produces useful output.
   }
 
   if (!orgSyncReportPath) throw new Error("No org-sync report found. Run org-sync first or pass --org-sync-report.");
   if (!agentStats) {
-    if (!options.llm) {
-      console.warn(`Agency agents root not found: ${options.agentsRoot}. Proceeding with empty agency context (--no-llm mode).`);
-      agentStats = { markdown: "", counts: new Map(), usedBytes: 0 };
-    } else {
-      throw new Error(`Agency agents root not found: ${options.agentsRoot}. Required in LLM mode.`);
-    }
+    console.warn(`Agency agents root not found: ${options.agentsRoot}. Proceeding with empty agency context.`);
+    agentStats = { markdown: "", counts: new Map(), usedBytes: 0 };
   }
 
   const { year, month, yyyyMmDd } = dateParts(options.outputDate);

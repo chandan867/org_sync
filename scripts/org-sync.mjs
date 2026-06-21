@@ -5,28 +5,11 @@ import { existsSync } from "node:fs";
 import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
+import { loadOrgRules, filterUntrackedNoise } from "./lib/org-config.mjs";
 
 const DEFAULT_SINCE = "24 hours ago";
 const DEFAULT_MAX_DIFF_BYTES = 80_000;
 const COMMAND_TIMEOUT_MS = 120_000;
-
-const PRODUCT_FLOW_RULES = [
-  { id: "worker-check-in", label: "Worker check-in / attendance", severity: "critical", pathPatterns: [/check.?in/i, /attendance/i, /geofence/i, /face/i, /worker/i], textPatterns: [/check.?in/i, /attendance/i, /geofence/i, /face verify/i] },
-  { id: "replacement-flow", label: "Replacement / shift coverage", severity: "critical", pathPatterns: [/replacement/i, /shift/i, /schedule/i], textPatterns: [/replacement/i, /fill shift/i, /coverage/i] },
-  { id: "trust-card", label: "Trust Card / public verification", severity: "critical", pathPatterns: [/trust.?card/i, /verification/i, /bgv/i, /identity/i], textPatterns: [/trust.?card/i, /verification/i, /public profile/i, /bgv/i] },
-  { id: "manager-feed", label: "Manager exception feed", severity: "high", pathPatterns: [/manager/i, /home/i, /feed/i, /exception/i], textPatterns: [/exception/i, /severity/i, /manager feed/i] },
-  { id: "schedule", label: "Schedule grid / shift assignment", severity: "high", pathPatterns: [/schedule/i, /shift/i, /roster/i], textPatterns: [/schedule/i, /shift/i, /roster/i] },
-  { id: "tasks-patrol-incidents", label: "Tasks / patrol / incidents", severity: "medium", pathPatterns: [/task/i, /patrol/i, /incident/i], textPatterns: [/task/i, /patrol/i, /incident/i] },
-  { id: "auth-invite-hierarchy", label: "Auth / invite hierarchy", severity: "high", pathPatterns: [/auth/i, /invite/i, /otp/i, /login/i], textPatterns: [/invite/i, /otp/i, /hierarchy/i, /login/i] },
-];
-
-const RISK_RULES = [
-  { id: "schema-or-persistence", label: "Schema or persistence touched", severity: "high", pathPatterns: [/migration/i, /database/i, /dao/i, /room/i, /entity/i, /schema/i] },
-  { id: "network-contract", label: "Network/API contract touched", severity: "high", pathPatterns: [/api/i, /dto/i, /retrofit/i, /ktor/i, /remote/i, /route/i], textPatterns: [/endpoint/i, /request/i, /response/i, /contract/i] },
-  { id: "security-sensitive", label: "Security-sensitive code touched", severity: "high", pathPatterns: [/auth/i, /token/i, /session/i, /permission/i, /otp/i, /cors/i], textPatterns: [/token/i, /session/i, /permission/i, /otp/i] },
-  { id: "critical-ui-flow", label: "Critical UI flow touched", severity: "medium", pathPatterns: [/screen/i, /viewmodel/i, /fragment/i, /activity/i] },
-  { id: "dirty-worktree", label: "Local uncommitted work present", severity: "medium", derived: (repoSummary) => repoSummary.after?.dirty || repoSummary.before?.dirty },
-];
 
 function usage() {
   return `org-sync: pull org repos, run local Git/GitNexus analysis, and draft change reports.
@@ -342,7 +325,7 @@ async function collectUncommittedSummary(repo, options) {
     worktreeNameStatus: worktreeNameStatus.stdout.trim(),
     worktreeDiffExcerpt: worktreeExcerpt.text,
     worktreeDiffTruncated: worktreeExcerpt.truncated,
-    untrackedFiles: untracked.stdout.trim(),
+    untrackedFiles: filterUntrackedNoise(untracked.stdout),
     errors: [cachedStat, cachedNameStatus, cachedDiff, worktreeStat, worktreeNameStatus, worktreeDiff, untracked]
       .filter((result) => !result.ok)
       .map((result) => ({ command: result.command, error: result.stderr.trim() || result.error })),
@@ -535,22 +518,31 @@ function matchRules(rules, repoSummary) {
   const allowTextEvidence = changedFiles.some((file) => /(^|\/)(app|src|server|client|lib|data|domain|ui|presentation)(\/|$)|\.(kt|java|js|ts|tsx|jsx|py|go|swift|xml|gradle|sql)$/i.test(file.path));
   return rules.map((rule) => {
     const evidence = [];
+    let pathMatchCount = 0;
     for (const file of changedFiles) {
-      if (rule.pathPatterns?.some((pattern) => pattern.test(file.path))) evidence.push(`path: ${file.path}`);
-      if (file.previousPath && rule.pathPatterns?.some((pattern) => pattern.test(file.previousPath))) evidence.push(`path: ${file.previousPath}`);
+      if (rule.pathPatterns?.some((pattern) => pattern.test(file.path))) { evidence.push(`path: ${file.path}`); pathMatchCount++; }
+      if (file.previousPath && rule.pathPatterns?.some((pattern) => pattern.test(file.previousPath))) { evidence.push(`path: ${file.previousPath}`); pathMatchCount++; }
     }
-    if (allowTextEvidence && rule.textPatterns?.some((pattern) => pattern.test(evidenceText))) evidence.push("text: keyword matched in commits/diff excerpt");
-    if (rule.derived?.(repoSummary)) evidence.push("state: derived repo condition matched");
-    return evidence.length ? { id: rule.id, label: rule.label, severity: rule.severity, evidence: Array.from(new Set(evidence)).slice(0, 6) } : null;
+    let hasTextMatch = false;
+    if (allowTextEvidence && rule.textPatterns?.some((pattern) => pattern.test(evidenceText))) {
+      evidence.push("text: keyword matched in commits/diff excerpt");
+      hasTextMatch = true;
+    }
+    let hasDerivedMatch = false;
+    if (rule.derived?.(repoSummary)) { evidence.push("state: derived repo condition matched"); hasDerivedMatch = true; }
+    if (!evidence.length) return null;
+    // Confidence: each path match +20 (cap 3 matches = 60), text match +15, derived +20. Max 100.
+    const confidence = Math.min(100, Math.min(pathMatchCount, 3) * 20 + (hasTextMatch ? 15 : 0) + (hasDerivedMatch ? 20 : 0));
+    return { id: rule.id, label: rule.label, severity: rule.severity, confidence, evidence: Array.from(new Set(evidence)).slice(0, 6) };
   }).filter(Boolean);
 }
 
-function tagProductFlows(repoSummary) {
-  return matchRules(PRODUCT_FLOW_RULES, repoSummary);
+function tagProductFlows(repoSummary, productFlowRules) {
+  return matchRules(productFlowRules, repoSummary);
 }
 
-function tagRisks(repoSummary) {
-  return matchRules(RISK_RULES, repoSummary);
+function tagRisks(repoSummary, riskRules) {
+  return matchRules(riskRules, repoSummary);
 }
 
 function reviewRecommendation(productFlows, riskTags) {
@@ -608,7 +600,7 @@ function buildFounderSignals(runSummary, reportPath) {
 }
 
 function formatTags(tags) {
-  return tags?.length ? tags.map((tag) => `- ${tag.label} (${tag.severity}) — ${tag.evidence.join("; ")}`).join("\n") : "- None detected.";
+  return tags?.length ? tags.map((tag) => `- ${tag.label} (${tag.severity}, ${tag.confidence ?? "?"}% confidence) — ${tag.evidence.join("; ")}`).join("\n") : "- None detected.";
 }
 
 function aggregateDevelopers(repos) {
@@ -811,82 +803,68 @@ function buildReleaseReviewPrompt(runSummary, founderSignals) {
 }
 
 function buildRepoPrompt(repoSummary) {
-  return `# Repo Change Understanding Task
+  const flows = repoSummary.productFlows || [];
+  const risks = repoSummary.riskTags || [];
+  const commits = (repoSummary.git.log || "").split("\n").filter(Boolean);
+  const flowLines = flows.length
+    ? flows.map((f) => `- ${f.label} (${f.severity}, ${f.confidence}% confidence): ${f.evidence.slice(0, 2).join("; ")}`).join("\n")
+    : "- None detected.";
+  const riskLines = risks.length
+    ? risks.map((r) => `- ${r.label} (${r.severity}, ${r.confidence}% confidence): ${r.evidence.slice(0, 2).join("; ")}`).join("\n")
+    : "- None.";
+  const commitList = commits.length
+    ? commits.slice(0, 10).map((line) => `- ${line}`).join("\n") + (commits.length > 10 ? `\n- ... and ${commits.length - 10} more` : "")
+    : "- No commits in this window.";
 
-You are analyzing changes after a local org sync. Git is the truth source. GitNexus output is structural context. Reason about behavior only where the evidence supports it; call out unknowns.
+  return `# Per-Repo Product Intelligence: ${repoSummary.name}
 
-## Repo
+You are a co-founder reviewing what changed in this repository. Your audience is the founding team — not engineers.
+Translate technical changes into product and business language. Do not list file names as primary output.
+You MAY call GitNexus MCP tools (gitnexus impact, gitnexus detect_changes) to understand blast radius before writing your analysis.
+Base all claims on the evidence below. If before/after is unclear, say so.
+
+## Repository
 - Name: ${repoSummary.name}
-- Path: ${repoSummary.path}
-- Branch before pull: ${repoSummary.before.branch || "unknown"}
-- HEAD before pull: ${repoSummary.before.head || "unknown"}
-- Branch after pull: ${repoSummary.after.branch || "unknown"}
-- HEAD after pull: ${repoSummary.after.head || "unknown"}
-- Remote: ${repoSummary.after.remote || repoSummary.before.remote || "unknown"}
-- Comparison: ${repoSummary.base.mode} ${repoSummary.base.ref}
-- Base commit: ${repoSummary.base.base || "unresolved"}
-- Dirty before sync: ${repoSummary.before.dirty ? "yes" : "no"}
+- Branch: ${repoSummary.after.branch || "unknown"}
+- Change scope: ${repoSummary.git.shortstat || "no committed changes"}
 - Dirty after sync: ${repoSummary.after.dirty ? "yes" : "no"}
 
-## Pull Results
-${formatCommandResults(repoSummary.pullResults)}
+## Pre-analyzed Product Flows (by file path matching)
+${flowLines}
 
-## Git Summary
-### Commits
-${repoSummary.git.log || "No commits found in this window."}
+## Pre-analyzed Risk Signals
+${riskLines}
 
-### Developer-wise Changes
-${repoSummary.git.developerSummary || "No developer summary."}
+## Commits
+${commitList}
 
-### Diff Stat
-${repoSummary.git.stat || "No diff stat."}
+## Developer Activity
+${repoSummary.git.developerSummary || "No commits in this window."}
 
-### Changed Files
-${repoSummary.git.nameStatus || "No changed files."}
-
-### Short Stat
-${repoSummary.git.shortstat || "No shortstat."}
-
-## Local Uncommitted Changes
-### Staged
-${repoSummary.uncommitted.cachedNameStatus || repoSummary.uncommitted.cachedStat || "No staged changes."}
-
-### Unstaged
-${repoSummary.uncommitted.worktreeNameStatus || repoSummary.uncommitted.worktreeStat || "No unstaged changes."}
-
-### Untracked
-${repoSummary.uncommitted.untrackedFiles || "No untracked files."}
-
-## GitNexus Best-Effort Analysis
-Standalone scripts cannot call MCP tools directly, so this section contains local GitNexus CLI analyze/status output where available.
-
+## GitNexus Structural Analysis
 ${formatGitNexusResults(repoSummary.gitnexus)}
 
 ## Diff Excerpt
 ${repoSummary.git.diffExcerpt || "No diff excerpt."}
 
-## Uncommitted Diff Excerpt
-### Staged
-${repoSummary.uncommitted.cachedDiffExcerpt || "No staged diff."}
+## Local Uncommitted Changes
+Staged: ${repoSummary.uncommitted.cachedNameStatus || "none"}
+Unstaged: ${repoSummary.uncommitted.worktreeNameStatus || "none"}
+Untracked: ${repoSummary.uncommitted.untrackedFiles || "none"}
 
-### Unstaged
-${repoSummary.uncommitted.worktreeDiffExcerpt || "No unstaged diff."}
+## Required Output
 
-### Untracked
-${repoSummary.uncommitted.untrackedFiles || "No untracked files."}
+### What Changed (Product Lens)
+One short paragraph: what feature or user flow changed? What does the product do differently now?
 
-## Task
-Write a concise before/after change explanation for this repo:
+### Demo Readiness
+Can this repo's changes be demoed today? Answer: yes / no / with caveats — and state the specific caveats.
 
-1. Key changes grouped by behavior/flow.
-2. Developer-wise summary: who changed what, based only on commit authors and messages.
-3. What the system likely did before.
-4. What it likely does now.
-5. User/business behavior changes.
-6. Impacted flows or modules.
-7. Risk level: LOW / MEDIUM / HIGH, with reasoning.
-8. Edge cases and testing/manual checks recommended.
-9. Unknowns where evidence is insufficient.
+### Business Risk
+Any schema changes, API breaks, auth changes, or user-facing regressions? Flag what a founder needs to decide before shipping.
+
+### Who Did What
+One bullet per developer: name and what they worked on — in product terms, not file terms.
 `;
 }
 
@@ -910,82 +888,166 @@ function formatGitNexusResults(results) {
     .join("\n\n");
 }
 
+function deterministicRiskLevel(repoSummary) {
+  const hasCritical = (repoSummary.productFlows || []).some((f) => f.severity === "critical");
+  const hasHighRisk = (repoSummary.riskTags || []).some((r) => r.severity === "high");
+  if (hasCritical || hasHighRisk) return "HIGH";
+  if (repoSummary.after.dirty || repoSummary.git.errors.length) return "MEDIUM";
+  return hasMeaningfulChanges(repoSummary) ? "LOW" : "NONE";
+}
+
 function buildDeterministicRepoReport(repoSummary) {
-  const risk = repoSummary.after.dirty || repoSummary.git.errors.length || repoSummary.gitnexus.some((result) => !result.skipped && !result.ok)
-    ? "MEDIUM"
-    : hasMeaningfulChanges(repoSummary)
-      ? "LOW"
-      : "LOW";
+  const flows = repoSummary.productFlows || [];
+  const risks = repoSummary.riskTags || [];
+  const riskLevel = deterministicRiskLevel(repoSummary);
+  const commits = (repoSummary.git.log || "").split("\n").filter(Boolean);
+  const changedFiles = repoChangedFiles(repoSummary);
 
-  return `## ${repoSummary.name}
+  const flowLines = flows.length
+    ? flows.map((f) => `| ${f.label} | ${f.severity.toUpperCase()} | ${f.confidence}% | ${f.evidence[0] || "-"} |`).join("\n")
+    : "| — | — | — | No flows detected |";
+  const riskLines = risks.length
+    ? risks.map((r) => `| ${r.label} | ${r.severity.toUpperCase()} | ${r.confidence}% | ${r.evidence[0] || "-"} |`).join("\n")
+    : "| — | — | — | No risk signals |";
 
-### Key Changes
-${repoSummary.git.log ? repoSummary.git.log.split("\n").map((line) => `- ${line}`).join("\n") : "- No commits found in the selected window."}
+  const filesByArea = {};
+  for (const f of changedFiles) {
+    const area = f.path.split("/")[0] || "root";
+    filesByArea[area] = (filesByArea[area] || 0) + 1;
+  }
+  const fileAreaSummary = Object.entries(filesByArea).map(([area, count]) => `${area} (${count})`).join(", ") || "none";
 
-### Developer-wise Changes
-${repoSummary.git.developerSummary || "No committed changes by developer in this window."}
+  return `## ${repoSummary.name} — Risk: ${riskLevel}
 
-### Changed Files
-${repoSummary.git.nameStatus ? repoSummary.git.nameStatus.split("\n").map((line) => `- ${line}`).join("\n") : "- No changed files found."}
+**Scope:** ${repoSummary.git.shortstat || "no committed changes"} | **Files by area:** ${fileAreaSummary}
+**Branch:** ${repoSummary.after.branch || "unknown"} | **Uncommitted work:** ${repoSummary.after.dirty ? "yes" : "no"}
 
-### Local Uncommitted Changes
-${repoSummary.uncommitted.cachedNameStatus ? `Staged:\n${repoSummary.uncommitted.cachedNameStatus.split("\n").map((line) => `- ${line}`).join("\n")}` : "Staged: none."}
+### Product Flows Touched
+| Flow | Severity | Confidence | Top Evidence |
+|------|----------|------------|--------------|
+${flowLines}
 
-${repoSummary.uncommitted.worktreeNameStatus ? `Unstaged:\n${repoSummary.uncommitted.worktreeNameStatus.split("\n").map((line) => `- ${line}`).join("\n")}` : "Unstaged: none."}
+### Risk Signals
+| Signal | Severity | Confidence | Top Evidence |
+|--------|----------|------------|--------------|
+${riskLines}
 
-${repoSummary.uncommitted.untrackedFiles ? `Untracked:\n${repoSummary.uncommitted.untrackedFiles.split("\n").map((line) => `- ${line}`).join("\n")}` : "Untracked: none."}
+### What the Team Shipped
+${commits.length ? commits.slice(0, 8).map((line) => `- ${line}`).join("\n") + (commits.length > 8 ? `\n- ... and ${commits.length - 8} more commits` : "") : "- No commits in selected window."}
 
-### GitNexus Impact Analysis
-- GitNexus CLI status: ${repoSummary.gitnexus.length ? repoSummary.gitnexus.map((result) => `${result.label}=${result.skipped ? "skipped" : result.ok ? "ok" : "failed"}`).join(", ") : "not run"}
-- Note: direct MCP \`detect_changes\`/\`impact\` calls are not available from this standalone Node script. Use the generated prompt for LLM/MCP-assisted before/after reasoning if needed.
+### Who Did What
+${repoSummary.git.developerSummary || "No committed developer activity."}
 
-### Product-Critical Flows
-${formatTags(repoSummary.productFlows)}
+### Work in Progress (not yet committed)
+${repoSummary.uncommitted.cachedNameStatus ? `Staged:\n${repoSummary.uncommitted.cachedNameStatus.split("\n").map((l) => `- ${l}`).join("\n")}` : "Staged: none."}
+${repoSummary.uncommitted.worktreeNameStatus ? `\nUnstaged:\n${repoSummary.uncommitted.worktreeNameStatus.split("\n").map((l) => `- ${l}`).join("\n")}` : "\nUnstaged: none."}
+${repoSummary.uncommitted.untrackedFiles ? `\nNew files (untracked):\n${repoSummary.uncommitted.untrackedFiles.split("\n").map((l) => `- ${l}`).join("\n")}` : ""}
 
-### Risk Tags
-${formatTags(repoSummary.riskTags)}
-
-### Review Recommendation
-- Deep review recommended: ${repoSummary.review?.deepRecommended ? "yes" : "no"}
-${repoSummary.review?.reasons?.length ? repoSummary.review.reasons.map((reason) => `- ${reason}`).join("\n") : "- No deep review trigger detected."}
-
-### Before vs After Behavior
-${hasMeaningfulChanges(repoSummary) ? "Prompt generated for OpenCode/manual reasoning. Deterministic mode does not infer behavior from raw diff beyond the Git summary." : "No meaningful change detected in the selected window."}
-
-### Risk
-- ${risk}
-
-### Warnings
-${repoSummary.warnings.length ? repoSummary.warnings.map((warning) => `- ${warning}`).join("\n") : "- None."}
+### Deep Review
+${repoSummary.review?.deepRecommended ? `**RECOMMENDED** — ${repoSummary.review.reasons.join("; ")}` : "Not triggered."}
+${repoSummary.warnings.length ? `\n**Warnings:** ${repoSummary.warnings.join(" | ")}` : ""}
 `;
+}
+
+function buildOrgRepoSection(repo) {
+  const flows = repo.productFlows || [];
+  const risks = repo.riskTags || [];
+  const commits = (repo.git.log || "").split("\n").filter(Boolean);
+  const changedFiles = repoChangedFiles(repo);
+
+  // Summarize changed files by top-level directory area rather than listing every path
+  const filesByArea = {};
+  for (const f of changedFiles) {
+    const parts = f.path.split("/");
+    const area = parts.length > 1 ? parts[0] : "root";
+    filesByArea[area] = (filesByArea[area] || 0) + 1;
+  }
+  const fileAreaSummary = Object.entries(filesByArea).map(([area, count]) => `${area}(${count})`).join(", ") || "none";
+
+  const flowSummary = flows.length
+    ? flows.map((f) => `- **${f.label}** [${f.severity}, ${f.confidence}% confidence]`).join("\n")
+    : "- None detected";
+  const riskSummary = risks.length
+    ? risks.map((r) => `- **${r.label}** [${r.severity}]`).join("\n")
+    : "- None";
+  const commitList = commits.length
+    ? commits.slice(0, 8).map((line) => `- ${line}`).join("\n") + (commits.length > 8 ? `\n- ... +${commits.length - 8} more` : "")
+    : "- No commits in this window.";
+
+  return `## ${repo.name}
+
+**Scope:** ${repo.git.shortstat || "no committed changes"} | **Files by area:** ${fileAreaSummary}
+**Review flag:** ${repo.review?.deepRecommended ? "DEEP REVIEW RECOMMENDED" : "routine"}
+**GitNexus:** ${repo.gitnexus.map((item) => `${item.label}:${item.skipped ? "skipped" : item.ok ? "ok" : "FAILED"}`).join(", ") || "not run"}
+
+### Product Flows (pre-analyzed)
+${flowSummary}
+
+### Risk Signals (pre-analyzed)
+${riskSummary}
+
+### Commits
+${commitList}
+
+### Developer Activity
+${repo.git.developerSummary || "No committed activity."}
+
+### In-Progress Work (uncommitted)
+Staged: ${repo.uncommitted.cachedNameStatus || "none"}
+Unstaged: ${repo.uncommitted.worktreeNameStatus || "none"}
+Untracked meaningful files: ${repo.uncommitted.untrackedFiles || "none"}`;
 }
 
 function buildOrgPrompt(runSummary) {
   const repoSections = runSummary.repos
-    .map((repo) => `## ${repo.name}\n\n### Commit Log\n${repo.git.log || "No commits."}\n\n### Developer-wise Changes\n${repo.git.developerSummary || "No developer summary."}\n\n### Changed Files\n${repo.git.nameStatus || "No changed files."}\n\n### Product-Critical Flows\n${formatTags(repo.productFlows)}\n\n### Risk Tags\n${formatTags(repo.riskTags)}\n\n### Deep Review Recommendation\n${repo.review?.deepRecommended ? repo.review.reasons.map((reason) => `- ${reason}`).join("\n") : "- No deep review trigger detected."}\n\n### Short Stat\n${repo.git.shortstat || "No shortstat."}\n\n### Local Uncommitted Changes\nStaged:\n${repo.uncommitted.cachedNameStatus || "none"}\n\nUnstaged:\n${repo.uncommitted.worktreeNameStatus || "none"}\n\nUntracked:\n${repo.uncommitted.untrackedFiles || "none"}\n\n### GitNexus\n${repo.gitnexus.map((item) => `${item.label}: ${item.skipped ? "skipped" : item.ok ? "ok" : "failed"}`).join("; ") || "not run"}\n\n### Repo Prompt\n${repo.promptPath || "not written"}`)
+    .map(buildOrgRepoSection)
     .join("\n\n---\n\n");
 
-  return `# Org Sync Report Task
+  return `# Founder & Product Intelligence Briefing
 
-You are producing a morning engineering intelligence report for an org folder.
+You are a co-founder and product strategist reviewing what the engineering team shipped since the last sync.
 
-Use Git summaries as factual evidence. Use GitNexus status as structural context. Do not invent behavior; if before/after behavior is unclear, say what source context is missing.
+Your audience is the founding team — NOT engineers. Translate technical changes into business and product language. Do not list file names or commit hashes as the primary output; surface them only as evidence where needed.
 
-## Run
+For each repo with meaningful changes, you MAY call GitNexus MCP tools (gitnexus impact, gitnexus detect_changes) to get blast radius and architectural impact. Include impact findings in the Engineering Risk section.
+
+Base all claims strictly on the Git evidence provided. Do not invent behavior. If before/after is unclear, say so.
+
+## Run Context
 - Org root: ${runSummary.options.orgRoot}
 - Since: ${runSummary.options.since}
 - Baseline: ${runSummary.options.baseline || "none"}
 - Generated at: ${runSummary.generatedAt}
 
 ## Required Markdown Output
-1. Executive summary.
-2. Repo-wise changes.
-3. Developer-wise details: who did what, grouped by repo and author.
-4. Impacted flows/modules where evidence supports them.
-5. Before vs after behavior for meaningful changes.
-6. Risk classification and edge cases.
-7. Recommended checks for the team today.
-8. Failed/skipped repos.
+
+### Executive Read
+One paragraph — what is the most important thing that happened today? What changed that a founder must know about?
+
+### What Changed (Product Lens)
+For each repo with meaningful changes: what feature or user flow changed? Not what files changed — what does the product do differently now? Group by user-facing impact.
+
+### Demo & Sales Readiness
+- What can be demoed or sold today that could not before?
+- What should NOT be demoed yet (risky or incomplete)?
+- What objections does this progress address?
+
+### Business Risks & Blockers
+- What could break a demo, affect customers, or block a release?
+- What needs the founder's attention or decision before shipping?
+- Any schema changes, API breaks, or auth changes that need extra QA?
+
+### Engineering Health
+- Who is doing what? (developer-wise summary)
+- What is the technical risk level? (LOW / MEDIUM / HIGH with reasons)
+- What tests or manual checks are recommended?
+- GitNexus impact findings if available.
+
+### Recommended Moves (Top 3)
+The three highest-leverage actions for the team today.
+
+### Open Questions for Founder
+What does the team need from the founder — decisions, context, or priorities?
 
 ## Repo Inputs
 ${repoSections || "No repositories analyzed."}
@@ -993,25 +1055,44 @@ ${repoSections || "No repositories analyzed."}
 }
 
 function buildFallbackReport(runSummary) {
-  const sections = runSummary.repos.map(buildDeterministicRepoReport).join("\n---\n\n");
+  const date = new Date(runSummary.generatedAt).toLocaleDateString("en-CA");
+  const reposWithChanges = runSummary.repos.filter(hasMeaningfulChanges);
+  const criticalFlowHits = runSummary.repos.reduce((n, r) => n + (r.productFlows || []).filter((f) => f.severity === "critical").length, 0);
+  const highRiskRepos = runSummary.repos.filter((r) => deterministicRiskLevel(r) === "HIGH");
+  const deepReviewRepos = runSummary.repos.filter((r) => r.review?.deepRecommended);
   const failures = runSummary.failures.length
-    ? runSummary.failures.map((failure) => `- ${failure.repo || "org"}: ${failure.error}`).join("\n")
+    ? runSummary.failures.map((f) => `- ${f.repo || "org"}: ${f.error}`).join("\n")
     : "- None.";
 
-  return `# Org Sync Report - ${new Date(runSummary.generatedAt).toLocaleDateString("en-CA")}
+  // Traffic-light table: one row per repo
+  const repoTableRows = runSummary.repos.map((repo) => {
+    const riskLevel = deterministicRiskLevel(repo);
+    const emoji = riskLevel === "HIGH" ? "🔴" : riskLevel === "MEDIUM" ? "🟡" : riskLevel === "NONE" ? "⚪" : "🟢";
+    const flows = (repo.productFlows || []).map((f) => f.label).join(", ") || "—";
+    const commits = (repo.git.log || "").split("\n").filter(Boolean).length;
+    const flag = repo.review?.deepRecommended ? "⚠️ deep review" : "—";
+    return `| ${emoji} ${repo.name} | ${riskLevel} | ${commits} | ${flows} | ${flag} |`;
+  }).join("\n");
 
-Generated by \`org-sync\`.
+  const sections = runSummary.repos.map(buildDeterministicRepoReport).join("\n---\n\n");
+  const llmNote = runSummary.llm?.status === "skipped"
+    ? "> LLM was skipped (`--no-llm`). This report is structured data only — no behavioral inference."
+    : "> OpenCode did not complete. This is the deterministic fallback report.";
 
-## Executive Summary
-- Repos analyzed: ${runSummary.repos.length}
-- Repos with changes: ${runSummary.repos.filter(hasMeaningfulChanges).length}
-- Critical product-flow hits: ${runSummary.repos.reduce((count, repo) => count + (repo.productFlows || []).filter((flow) => flow.severity === "critical").length, 0)}
-- High-risk repos: ${runSummary.repos.filter((repo) => (repo.riskTags || []).some((risk) => risk.severity === "high")).length}
-- Deep review recommended: ${runSummary.repos.some((repo) => repo.review?.deepRecommended) ? "yes" : "no"}
-- Failures: ${runSummary.failures.length}
-- LLM status: ${runSummary.llm?.status || "not run"}
+  return `# Org Sync — ${date}
 
-${runSummary.llm?.status === "skipped" ? "OpenCode/LLM was skipped; this report is deterministic and does not infer before/after behavior beyond factual Git summaries." : "OpenCode/LLM did not produce the final report; this fallback report is deterministic."}
+${llmNote}
+
+## Status at a Glance
+
+| Repo | Risk | Commits | Flows Touched | Flags |
+|------|------|---------|---------------|-------|
+${repoTableRows || "| — | — | — | — | — |"}
+
+**Summary:** ${reposWithChanges.length}/${runSummary.repos.length} repos changed · ${criticalFlowHits} critical flow hits · ${highRiskRepos.length} high-risk · ${deepReviewRepos.length} need deep review · ${runSummary.failures.length} failures
+
+${deepReviewRepos.length ? `**Deep review needed:** ${deepReviewRepos.map((r) => r.name).join(", ")}` : ""}
+${highRiskRepos.length ? `**High-risk repos:** ${highRiskRepos.map((r) => r.name).join(", ")}` : ""}
 
 ---
 
@@ -1019,11 +1100,11 @@ ${sections || "No repositories analyzed."}
 
 ---
 
-## Failed or Skipped Repos
+## Failures
 ${failures}
 
-## Manual LLM Prompt
-${runSummary.orgPromptPath ? `Use this prompt with OpenCode if you want behavioral before/after reasoning: \`${runSummary.orgPromptPath}\`.` : "No org prompt was written."}
+## To Get Behavioral Analysis
+${runSummary.orgPromptPath ? `Run: \`opencode run "Analyze this org sync" --file ${runSummary.orgPromptPath}\`` : "No org prompt written — re-run without --no-llm."}
 `;
 }
 
@@ -1182,8 +1263,8 @@ async function analyzeRepo(repo, options) {
     warnings,
   };
 
-  const productFlows = tagProductFlows(draftSummary);
-  const riskTags = tagRisks(draftSummary);
+  const productFlows = tagProductFlows(draftSummary, options.orgRules.productFlows);
+  const riskTags = tagRisks(draftSummary, options.orgRules.riskRules);
   return { ...draftSummary, productFlows, riskTags, review: reviewRecommendation(productFlows, riskTags) };
 }
 
@@ -1218,7 +1299,16 @@ async function main() {
     throw new Error(`No git repositories found under ${options.orgRoot}${options.repos.length ? ` matching ${options.repos.join(", ")}` : ""}`);
   }
 
-    console.log(`Org root: ${options.orgRoot}`);
+  // Load per-org rules (reads from vision/product-overview.md fenced blocks if present).
+  const orgRules = await loadOrgRules(options.orgRoot);
+  options.orgRules = orgRules;
+  if (orgRules.source.found) {
+    console.log(`Org rules: loaded from product-overview.md (productFlows=${orgRules.source.productFlows}, riskRules=${orgRules.source.riskRules})`);
+  } else {
+    console.log(`Org rules: using generic defaults (add fenced blocks to vision/product-overview.md to customize)`);
+  }
+
+  console.log(`Org root: ${options.orgRoot}`);
   console.log(`Repos: ${repos.map((repo) => repo.name).join(", ")}`);
   console.log(`Output: ${options.outputDir}`);
   console.log(`Notes: ${options.notes ? options.notesDir : "disabled"}`);

@@ -5,12 +5,12 @@ import { existsSync } from "node:fs";
 import { readFile, readdir, realpath } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
+import { resolveProjectsRoot } from "./lib/org-config.mjs";
 
-const DEFAULT_PROJECTS_ROOT = "/Users/chandan/Desktop/projects";
 const DEFAULT_PORT = 3877;
 
 function parseArgs(argv) {
-  const options = { projectsRoot: DEFAULT_PROJECTS_ROOT, port: DEFAULT_PORT, allRuns: false, help: false };
+  const options = { projectsRoot: resolveProjectsRoot(null), port: DEFAULT_PORT, allRuns: false, help: false };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     const next = () => {
@@ -49,7 +49,7 @@ Usage:
   org-dashboard --port 3877
 
 Options:
-  --projects-root <path>   Folder containing *_org folders. Default: ${DEFAULT_PROJECTS_ROOT}.
+  --projects-root <path>   Folder containing *_org folders. Default: cwd (or ORG_SYNC_PROJECTS_ROOT env).
   --port <n>               Localhost port. Default: ${DEFAULT_PORT}.
   --help                   Show this help.
 `;
@@ -58,6 +58,43 @@ Options:
 async function readJson(filePath, fallback = null) {
   if (!existsSync(filePath)) return fallback;
   return JSON.parse(await readFile(filePath, "utf8"));
+}
+
+async function readTextPreview(filePath, maxChars = 1800) {
+  if (!filePath || !existsSync(filePath)) return null;
+  const content = await readFile(filePath, "utf8");
+  if (content.length <= maxChars) return content;
+  return content.slice(0, maxChars) + "\n\n*[…truncated — open full file for more]*";
+}
+
+async function readLatestFounderDaily(orgPath) {
+  const dailyRoot = path.join(orgPath, "vision", "daily");
+  if (!existsSync(dailyRoot)) return null;
+  const years = (await readdir(dailyRoot, { withFileTypes: true }).catch(() => []))
+    .filter((e) => e.isDirectory() && /^\d{4}$/.test(e.name)).map((e) => e.name).sort().reverse();
+  for (const year of years) {
+    const months = (await readdir(path.join(dailyRoot, year), { withFileTypes: true }).catch(() => []))
+      .filter((e) => e.isDirectory() && /^\d{2}$/.test(e.name)).map((e) => e.name).sort().reverse();
+    for (const month of months) {
+      const files = (await readdir(path.join(dailyRoot, year, month), { withFileTypes: true }).catch(() => []))
+        .filter((e) => e.isFile() && /^\d{4}-\d{2}-\d{2}\.md$/.test(e.name)).map((e) => e.name).sort().reverse();
+      if (files[0]) return path.join(dailyRoot, year, month, files[0]);
+    }
+  }
+  return null;
+}
+
+function extractMarkdownSection(content, sectionHeading, maxChars = 600) {
+  if (!content) return null;
+  const headingRe = new RegExp(`^#{1,4}\\s+${sectionHeading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`, "mi");
+  const match = content.match(headingRe);
+  if (!match) return null;
+  const start = match.index + match[0].length;
+  const tail = content.slice(start);
+  const nextHeadingIdx = tail.search(/^#{1,4}\s/m);
+  const section = (nextHeadingIdx > 0 ? tail.slice(0, nextHeadingIdx) : tail).trim();
+  if (!section) return null;
+  return section.length <= maxChars ? section : section.slice(0, maxChars) + "…";
 }
 
 function escapeHtml(value) {
@@ -242,7 +279,69 @@ function renderJsonContent(content) {
 
 function page(title, body) {
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escapeHtml(title)}</title><style>
-body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;margin:0;background:#0f172a;color:#e5e7eb;line-height:1.6}a{color:#93c5fd}a:hover{color:#bfdbfe}.wrap{max-width:1100px;margin:0 auto;padding:24px}.card{background:#111827;border:1px solid #263244;border-radius:14px;padding:18px;margin:14px 0}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px}.muted{color:#9ca3af}.pill{display:inline-block;padding:3px 8px;border-radius:999px;background:#1f2937;margin:2px}.bad{background:#7f1d1d}.ok{background:#14532d}.warn{background:#713f12}.sel{background:#1e3a5f}pre{white-space:pre-wrap;background:#020617;padding:12px;border-radius:10px;overflow:auto}h1,h2,h3{margin-bottom:8px}small{color:#9ca3af}.markdown-body{max-width:880px}.markdown-body h1,.markdown-body h2,.markdown-body h3,.markdown-body h4{margin-top:1.4em;margin-bottom:.4em;line-height:1.3;color:#f1f5f9}.markdown-body h1{border-bottom:1px solid #263244;padding-bottom:.3em}.markdown-body h2{border-bottom:1px solid #1e293b;padding-bottom:.2em}.markdown-body p{margin:.6em 0}.markdown-body ul,.markdown-body ol{padding-left:1.6em;margin:.4em 0}.markdown-body li{margin:.2em 0}.markdown-body pre{background:#020617;padding:14px;border-radius:10px;overflow:auto;margin:.8em 0;border:1px solid #1e293b}.markdown-body pre code{background:0 0;padding:0;font-size:.92em}.markdown-body code{background:#1e293b;padding:2px 6px;border-radius:4px;font-size:.88em}.markdown-body strong{color:#f1f5f9}.markdown-body hr{border:none;border-top:1px solid #263244;margin:1.2em 0}.markdown-body a{color:#93c5fd;text-decoration:underline}.markdown-body blockquote{border-left:3px solid #334155;margin:.8em 0;padding:.2em 1em;color:#9ca3af}.toc{background:#1e293b;border:1px solid #334155;border-radius:10px;padding:14px 18px;margin:1em 0;max-width:880px}.toc h2{margin:0 0 .5em;font-size:1.1em;color:#e5e7eb}.toc a{display:block;padding:2px 0;color:#94a3b8;text-decoration:none;font-size:.92em}.toc a:hover{color:#93c5fd}.toc-h3{padding-left:1.2em!important}.toc-h4{padding-left:2.4em!important}pre.json{font-size:.85em}</style></head><body><div class="wrap"><p><a href="/">Home</a> · <a href="/risks">Risks</a> · <a href="/founder">Founder</a> · <a href="/gtm">GTM</a></p>${body}</div></body></html>`;
+:root{--bg:#0b1120;--surface:#111827;--border:#1e2d42;--border2:#263244;--text:#e2e8f0;--muted:#94a3b8;--link:#7dd3fc;--link-hover:#bae6fd;--green:#166534;--green-bg:#14532d;--red-bg:#7f1d1d;--amber-bg:#78350f;--blue-bg:#1e3a5f;--purple-bg:#3b0764}
+*{box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:0;background:var(--bg);color:var(--text);line-height:1.65;font-size:15px}
+a{color:var(--link);text-decoration:none}a:hover{color:var(--link-hover);text-decoration:underline}
+.wrap{max-width:1160px;margin:0 auto;padding:20px 24px}
+.topnav{background:#0d1526;border-bottom:1px solid var(--border);padding:10px 24px;display:flex;align-items:center;gap:16px;position:sticky;top:0;z-index:100}
+.topnav a{color:var(--muted);font-size:.9em;font-weight:500;padding:4px 10px;border-radius:6px}
+.topnav a:hover{color:var(--text);background:var(--surface)}
+.topnav .logo{color:var(--text);font-weight:700;font-size:1em;margin-right:8px}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:18px 20px;margin:12px 0}
+.card-sm{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}
+.grid-3{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px}
+.muted{color:var(--muted);font-size:.9em}
+.label{font-size:.75em;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
+.num{font-size:2em;font-weight:700;line-height:1;color:var(--text);margin:.1em 0}
+.pill{display:inline-block;padding:3px 9px;border-radius:999px;background:#1f2937;margin:2px;font-size:.82em;font-weight:500;border:1px solid #263244}
+.bad{background:var(--red-bg);border-color:#991b1b;color:#fca5a5}
+.ok{background:var(--green-bg);border-color:#15803d;color:#86efac}
+.warn{background:var(--amber-bg);border-color:#b45309;color:#fcd34d}
+.sel{background:var(--blue-bg);border-color:#1d4ed8;color:#93c5fd}
+.info{background:var(--purple-bg);border-color:#7e22ce;color:#d8b4fe}
+pre{white-space:pre-wrap;background:#020617;padding:14px;border-radius:10px;overflow:auto;font-size:.85em;border:1px solid var(--border)}
+h1{font-size:1.7em;font-weight:700;margin:.2em 0 .5em;color:#f1f5f9}
+h2{font-size:1.2em;font-weight:600;margin:.8em 0 .4em;color:#e2e8f0}
+h3{font-size:1em;font-weight:600;margin:.6em 0 .3em;color:#cbd5e1}
+small{color:var(--muted);font-size:.82em}
+.section-title{font-size:.78em;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin:1.4em 0 .5em;padding-bottom:.3em;border-bottom:1px solid var(--border)}
+.digest{background:#0d1f35;border:1px solid #1e3a5f;border-radius:14px;padding:20px 22px;margin:12px 0}
+.digest-label{font-size:.72em;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:#7dd3fc;margin-bottom:.5em}
+.brief-card{background:#131f30;border:1px solid var(--border);border-radius:12px;padding:16px 18px;margin:8px 0}
+.brief-domain{font-size:.72em;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:.3em}
+.signal-row{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)}
+.signal-row:last-child{border-bottom:none}
+.signal-num{font-size:1.4em;font-weight:700;min-width:2.5em;text-align:right}
+.signal-label{color:var(--text);font-size:.92em}
+details>summary{cursor:pointer;padding:8px 2px;font-weight:600;color:#cbd5e1;list-style:none;user-select:none}
+details>summary::before{content:"▶ ";font-size:.75em;color:var(--muted)}
+details[open]>summary::before{content:"▼ "}
+.markdown-body{max-width:900px}
+.markdown-body h1,.markdown-body h2,.markdown-body h3,.markdown-body h4{margin-top:1.4em;margin-bottom:.4em;line-height:1.3;color:#f1f5f9}
+.markdown-body h1{border-bottom:1px solid #263244;padding-bottom:.3em}
+.markdown-body h2{border-bottom:1px solid #1e293b;padding-bottom:.2em}
+.markdown-body p{margin:.6em 0}
+.markdown-body ul,.markdown-body ol{padding-left:1.6em;margin:.4em 0}
+.markdown-body li{margin:.25em 0}
+.markdown-body pre{background:#020617;padding:14px;border-radius:10px;overflow:auto;margin:.8em 0;border:1px solid #1e293b}
+.markdown-body pre code{background:0 0;padding:0;font-size:.88em}
+.markdown-body code{background:#1e293b;padding:2px 6px;border-radius:4px;font-size:.85em;color:#e2e8f0}
+.markdown-body strong{color:#f1f5f9}
+.markdown-body hr{border:none;border-top:1px solid #263244;margin:1.2em 0}
+.markdown-body a{color:#93c5fd;text-decoration:underline}
+.markdown-body blockquote{border-left:3px solid #334155;margin:.8em 0;padding:.2em 1em;color:#9ca3af}
+.toc{background:#1e293b;border:1px solid #334155;border-radius:10px;padding:14px 18px;margin:1em 0;max-width:880px}
+.toc h2{margin:0 0 .5em;font-size:1.1em;color:#e5e7eb}
+.toc a{display:block;padding:2px 0;color:#94a3b8;text-decoration:none;font-size:.9em}
+.toc a:hover{color:#93c5fd}
+.toc-h3{padding-left:1.2em!important}
+.toc-h4{padding-left:2.4em!important}
+pre.json{font-size:.82em}
+</style></head><body>
+<div class="topnav"><span class="logo">⚡ OrgIntel</span><a href="/">All Orgs</a><a href="/risks">Risk Signals</a><a href="/founder">Founder</a><a href="/gtm">GTM</a></div>
+<div class="wrap">${body}</div></body></html>`;
 }
 
 function statusClass(status) {
@@ -583,34 +682,66 @@ async function renderHome(options) {
   const index = await loadIndex(options);
 
   const orgEntities = await Promise.all((index.orgs || []).map(async (o) => readJson(path.join(options.globalDir, "orgs", `${o.name}.json`), null)));
+
+  let totalChanged = 0, totalCritical = 0, totalHighRisk = 0, deepNeeded = 0;
   const allFlows = [];
   for (const org of orgEntities) {
     if (!org) continue;
+    const s = org.signals?.summary || {};
+    totalChanged += s.reposWithChanges || 0;
+    totalCritical += s.criticalFlowHits || 0;
+    totalHighRisk += s.highRiskRepos || 0;
+    if (s.deepReviewRecommended) deepNeeded++;
     for (const repo of org.signals?.repos || []) {
-      for (const flow of repo.productFlows || []) {
-        allFlows.push({ org: org.name, repo: repo.name, ...flow });
-      }
+      for (const flow of repo.productFlows || []) allFlows.push({ org: org.name, ...flow });
     }
   }
   const flowCounts = {};
   for (const flow of allFlows) {
-    if (!flowCounts[flow.id]) flowCounts[flow.id] = { label: flow.label, count: 0 };
+    if (!flowCounts[flow.id]) flowCounts[flow.id] = { label: flow.label, severity: flow.severity, count: 0 };
     flowCounts[flow.id].count++;
   }
-  const topFlows = Object.values(flowCounts).sort((a, b) => b.count - a.count).slice(0, 6);
-  const flowSummary = topFlows.length > 0
-    ? `<p>Product movement: ${topFlows.map((f) => `<span class="pill warn">${escapeHtml(f.label.split("/")[0].trim())}</span>`).join(" ")}</p>`
-    : "";
+  const topFlows = Object.values(flowCounts).sort((a, b) => b.count - a.count).slice(0, 8);
+
+  const metricCards = `<div class="grid-3">
+    <div class="card-sm"><div class="label">Projects Updated</div><div class="num">${totalChanged}</div></div>
+    <div class="card-sm"><div class="label">Critical Flow Hits</div><div class="num" style="color:${totalCritical > 0 ? "#fca5a5" : "#86efac"}">${totalCritical}</div></div>
+    <div class="card-sm"><div class="label">High-Risk Repos</div><div class="num" style="color:${totalHighRisk > 0 ? "#fcd34d" : "#86efac"}">${totalHighRisk}</div></div>
+    <div class="card-sm"><div class="label">Deep Review Needed</div><div class="num" style="color:${deepNeeded > 0 ? "#fca5a5" : "#86efac"}">${deepNeeded}</div></div>
+  </div>`;
+
+  const flowChips = topFlows.length > 0
+    ? `<div style="margin:.6em 0">${topFlows.map((f) => `<span class="pill ${flowSeverityPill(f.severity)}">${escapeHtml(f.label)}</span>`).join(" ")}</div>`
+    : `<p class="muted">No product flows detected yet. Run org-sync-all first.</p>`;
 
   const orgCards = (index.orgs || []).map((org) => {
     const summary = org.summary || {};
-    const llmHint = org.signals?.reportPath ? "OpenCode SOP on" : "Run daily sync";
-    return `<div class="card"><h2><a href="/orgs/${encodeURIComponent(org.name)}">${escapeHtml(org.name)}</a></h2><p><span class="pill ${statusClass(org.status)}">${escapeHtml(org.status)}</span> <span class="pill sel">${escapeHtml(llmHint)}</span></p><p>Repos changed: ${summary.reposWithChanges ?? "?"} · Critical flows: ${summary.criticalFlowHits ?? "?"} · High-risk repos: ${summary.highRiskRepos ?? "?"}</p><p><a href="/orgs/${encodeURIComponent(org.name)}" class="pill sel">Command center</a> · <a href="/orgs/${encodeURIComponent(org.name)}/weekly-analysis" class="pill warn">Weekly product analysis</a> · <a href="/orgs/${encodeURIComponent(org.name)}/founder" class="pill">Founder hub</a></p><details><summary style="cursor:pointer;font-size:.92em;color:#9ca3af">Filesystem</summary><p class="muted">${escapeHtml(org.path)}</p></details></div>`;
+    const hasChanges = (summary.reposWithChanges || 0) > 0;
+    const hasCritical = (summary.criticalFlowHits || 0) > 0;
+    const statusPill = `<span class="pill ${statusClass(org.status)}">${escapeHtml(org.status)}</span>`;
+    return `<div class="card">
+      <h2><a href="/orgs/${encodeURIComponent(org.name)}">${escapeHtml(org.name)}</a></h2>
+      <p>${statusPill}${hasCritical ? ` <span class="pill bad">${summary.criticalFlowHits} critical</span>` : ""}</p>
+      <div class="grid-3" style="margin:.5em 0">
+        <div><div class="label">Changed</div><strong>${summary.reposWithChanges ?? "?"}</strong></div>
+        <div><div class="label">Critical flows</div><strong style="color:${hasCritical ? "#fca5a5" : "inherit"}">${summary.criticalFlowHits ?? "?"}</strong></div>
+        <div><div class="label">High-risk</div><strong>${summary.highRiskRepos ?? "?"}</strong></div>
+      </div>
+      <p style="margin-top:10px">
+        <a href="/orgs/${encodeURIComponent(org.name)}" class="pill sel">Open briefing</a>
+        <a href="/orgs/${encodeURIComponent(org.name)}/founder" class="pill">Founder hub</a>
+      </p>
+    </div>`;
   }).join("");
 
-  const navLinks = `<div class="card" style="text-align:center"><h2>Founder / Product Command Center</h2><p><span class="pill ok">OpenCode LLM default SOP</span> <span class="pill sel">Dashboard is read-only</span></p><p><a href="/gtm" class="pill sel">GTM experiments</a> · <a href="/risks" class="pill warn">All risks</a> · <a href="/founder" class="pill">Founder overview</a></p>${flowSummary}</div>`;
+  const generatedAt = index.generatedAt ? new Date(index.generatedAt).toLocaleString() : null;
+  const headerNote = generatedAt
+    ? `<p class="muted" style="margin:0 0 12px">Last synced: ${escapeHtml(generatedAt)} · <a href="/risks">All risk signals</a> · <a href="/gtm">GTM ledger</a></p>`
+    : `<div class="card" style="border-color:#713f12;background:#1c1208"><p style="margin:0">No index yet. Run <code>npm run org:sync:all</code> from your projects root first.</p></div>`;
 
-  return page("Org Dashboard", `<h1>Org Intelligence</h1><p class="muted">Generated: ${escapeHtml(index.generatedAt || "No index yet. Run org-sync-all first.")}</p>${navLinks}<div class="grid">${orgCards || "<div class='card'>No orgs indexed yet.</div>"}</div>`);
+  const flowSection = `<div class="section-title">Active Product Flows Across Orgs</div>${flowChips}`;
+
+  return page("Org Intelligence", `<h1 style="margin-bottom:.2em">Org Intelligence</h1>${headerNote}${metricCards}${flowSection}<div class="section-title">Your Orgs</div><div class="grid">${orgCards || "<div class='card'>No orgs indexed yet.</div>"}</div>`);
 }
 
 async function renderOrg(options, orgName, index, runId, allRuns) {
@@ -765,26 +896,100 @@ async function renderOrg(options, orgName, index, runId, allRuns) {
     developerSection = `<details open><summary style="cursor:pointer;font-size:1.1em;font-weight:600;padding:6px 0">Developer Summary</summary><div class="card"><p class="muted">No developer summary found yet. Run daily sync or weekly sync to generate developer rollups.</p></div></details>`;
   }
 
+  // ── TODAY'S DIGEST ──────────────────────────────────────────────────────────
+  let digestHtml = "";
+  const founderDailyPath = await readLatestFounderDaily(org.path);
+  if (founderDailyPath) {
+    const dailyContent = await readTextPreview(founderDailyPath, 3000).catch(() => null);
+    const execRead = dailyContent ? extractMarkdownSection(dailyContent, "Executive Read", 900) : null;
+    const whatChanged = dailyContent ? extractMarkdownSection(dailyContent, "What Changed", 600) : null;
+    const moves = dailyContent ? extractMarkdownSection(dailyContent, "Recommended Moves", 500) : null;
+    const dateLabel = path.basename(founderDailyPath, ".md");
+    if (execRead || whatChanged) {
+      const digestBody = [
+        execRead ? `<div class="markdown-body">${safeMarkdownToHtml(execRead)}</div>` : "",
+        whatChanged ? `<h3 style="margin-top:.8em;color:#94a3b8;font-size:.82em;text-transform:uppercase;letter-spacing:.06em">What Changed</h3><div class="markdown-body">${safeMarkdownToHtml(whatChanged)}</div>` : "",
+        moves ? `<h3 style="margin-top:.8em;color:#94a3b8;font-size:.82em;text-transform:uppercase;letter-spacing:.06em">Recommended Moves</h3><div class="markdown-body">${safeMarkdownToHtml(moves)}</div>` : "",
+      ].filter(Boolean).join("");
+      digestHtml = `<div class="digest"><div class="digest-label">Today's Briefing · ${escapeHtml(dateLabel)}</div>${digestBody}<p style="margin-top:12px"><a href="/orgs/${encodeURIComponent(orgName)}/vision/daily" class="pill sel">Open full daily note</a> <a href="/orgs/${encodeURIComponent(orgName)}/vision/decisions" class="pill">Decisions</a> <a href="/orgs/${encodeURIComponent(orgName)}/vision/todos" class="pill">Todos</a></p></div>`;
+    }
+  }
+  if (!digestHtml && effectiveRunId) {
+    const reportFilePath = path.join(org.path, "org-sync-reports", effectiveRunId, "report.md");
+    const reportContent = await readTextPreview(reportFilePath, 2000).catch(() => null);
+    if (reportContent) {
+      const execSummary = extractMarkdownSection(reportContent, "Executive Summary", 800) || reportContent.slice(0, 600);
+      digestHtml = `<div class="digest"><div class="digest-label">Engineering Report · ${escapeHtml(friendlyRunLabel(effectiveRunId))}</div><div class="markdown-body">${safeMarkdownToHtml(execSummary)}</div><p style="margin-top:12px"><a href="/orgs/${encodeURIComponent(orgName)}/runs/${encodeURIComponent(effectiveRunId)}/report" class="pill sel">Open full report</a></p></div>`;
+    }
+  }
+  if (!digestHtml) {
+    digestHtml = `<div class="digest" style="border-color:#334155"><div class="digest-label">No briefing yet</div><p style="margin:.4em 0;color:#94a3b8">Run <code>npm run org:sync:all</code> to generate your first report, then <code>npm run founder:sync</code> for the full briefing.</p></div>`;
+  }
+
+  // ── AGENCY BRIEFS (inline previews) ─────────────────────────────────────────
   const agencyDomains = ["product", "gtm", "sales", "marketing", "engineering", "customer-success"];
-  const agencyCards = agencyDomains.map((domain) => {
-    const dailyExists = effectiveRunId && existsSync(path.join(org.path, "org-sync-reports", effectiveRunId, "agency-briefs", `${domain}.md`));
-    const weeklyExists = latestWeekly && existsSync(path.join(org.path, "org-sync-weekly", latestWeekly, "agency-briefs", `${domain}.md`));
+  const agencyBriefCards = await Promise.all(agencyDomains.map(async (domain) => {
+    const dailyBriefPath = effectiveRunId ? path.join(org.path, "org-sync-reports", effectiveRunId, "agency-briefs", `${domain}.md`) : null;
+    const weeklyBriefPath = latestWeekly ? path.join(org.path, "org-sync-weekly", latestWeekly, "agency-briefs", `${domain}.md`) : null;
+    const briefPath = (dailyBriefPath && existsSync(dailyBriefPath)) ? dailyBriefPath
+      : (weeklyBriefPath && existsSync(weeklyBriefPath)) ? weeklyBriefPath : null;
     const label = domain.split("-").map((p) => p[0].toUpperCase() + p.slice(1)).join(" ");
-    const kind = `agency-briefs/${domain}`;
-    const href = dailyExists
-      ? `/orgs/${encodeURIComponent(orgName)}/runs/${encodeURIComponent(effectiveRunId)}/${encodeURIComponent(kind)}`
-      : weeklyExists
-        ? `/orgs/${encodeURIComponent(orgName)}/weekly/${encodeURIComponent(latestWeekly)}/${encodeURIComponent(kind)}`
-        : null;
-    const source = dailyExists ? "daily sync" : weeklyExists ? "weekly sync" : "missing";
-    return `<div class="card"><h3>${escapeHtml(label)}</h3><p>${href ? `<span class="pill ok">brief ready</span> <span class="pill sel">${escapeHtml(source)}</span>` : `<span class="pill warn">missing</span>`}</p><p>${href ? `<a href="${escapeHtml(href)}">Open brief</a>` : "Run daily or weekly sync to generate."}</p></div>`;
-  }).join("");
-  const agencySection = `<details open><summary style="cursor:pointer;font-size:1.1em;font-weight:600;padding:6px 0">Agency Intelligence</summary><div class="grid">${agencyCards}</div></details>`;
+    const briefKind = `agency-briefs/${domain}`;
+    const briefSource = (dailyBriefPath && existsSync(dailyBriefPath)) ? "daily" : (weeklyBriefPath && existsSync(weeklyBriefPath)) ? "weekly" : null;
+    const briefHref = briefPath
+      ? (briefSource === "daily"
+        ? `/orgs/${encodeURIComponent(orgName)}/runs/${encodeURIComponent(effectiveRunId)}/${encodeURIComponent(briefKind)}`
+        : `/orgs/${encodeURIComponent(orgName)}/weekly/${encodeURIComponent(latestWeekly)}/${encodeURIComponent(briefKind)}`)
+      : null;
+    if (!briefPath) {
+      return `<div class="brief-card"><div class="brief-domain">${escapeHtml(label)}</div><p class="muted" style="margin:.3em 0;font-size:.88em">No brief yet.</p></div>`;
+    }
+    const briefContent = await readTextPreview(briefPath, 5000).catch(() => null);
+    const questions = briefContent ? extractMarkdownSection(briefContent, "Domain-Specific Questions", 700) : null;
+    const previewHtml = questions
+      ? `<div class="markdown-body" style="font-size:.88em">${safeMarkdownToHtml(questions)}</div>`
+      : `<p class="muted" style="font-size:.88em">Brief generated — <a href="${escapeHtml(briefHref)}">open to read</a>.</p>`;
+    return `<div class="brief-card"><div class="brief-domain">${escapeHtml(label)} <span class="pill sel" style="font-size:.7em;vertical-align:middle">${escapeHtml(briefSource)}</span>${briefHref ? ` <a href="${escapeHtml(briefHref)}" style="font-size:.8em;float:right;color:#7dd3fc">open →</a>` : ""}</div>${previewHtml}</div>`;
+  }));
+  const agencySection = `<div class="section-title">Agency Intelligence — Questions to answer today</div><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:10px">${agencyBriefCards.join("")}</div>`;
 
-  const riskCards = sellRiskSignals(repos).map((signal) => `<div class="card"><p><strong>${signal.count}</strong><br>${escapeHtml(signal.label)}</p><p><span class="pill ${signal.cls}">${escapeHtml(signal.detail)}</span></p></div>`).join("");
-  const decisionSection = `<div class="card"><h2>Demo / Sell / Ship Signals</h2><div class="grid">${riskCards}</div><p>${summary.deepReviewRecommended ? `<span class="pill bad">Deep review needed</span>` : `<span class="pill ok">No deep-review trigger</span>`} ${summary.releaseReviewRecommended ? `<span class="pill bad">Release review needed</span>` : `<span class="pill ok">No release-review trigger</span>`}</p></div>`;
+  // ── SIGNALS ──────────────────────────────────────────────────────────────────
+  const signalRows = sellRiskSignals(repos).map((s) =>
+    `<div class="signal-row"><span class="signal-num" style="color:${s.cls === "bad" ? "#fca5a5" : s.cls === "warn" ? "#fcd34d" : "#86efac"}">${s.count}</span><span class="signal-label">${escapeHtml(s.label)}<br><small>${escapeHtml(s.detail)}</small></span></div>`
+  ).join("");
+  const metricRow = `<div class="grid-3" style="margin-bottom:10px">
+    <div class="card-sm"><div class="label">Repos Changed</div><div class="num">${summary.reposWithChanges ?? 0}</div></div>
+    <div class="card-sm"><div class="label">Critical Flows</div><div class="num" style="color:${(summary.criticalFlowHits||0)>0?"#fca5a5":"#86efac"}">${summary.criticalFlowHits ?? 0}</div></div>
+    <div class="card-sm"><div class="label">High-Risk Repos</div><div class="num" style="color:${(summary.highRiskRepos||0)>0?"#fcd34d":"#86efac"}">${summary.highRiskRepos ?? 0}</div></div>
+  </div>`;
+  const reviewPills = [
+    summary.deepReviewRecommended ? `<span class="pill bad">Deep review needed</span>` : `<span class="pill ok">No deep-review trigger</span>`,
+    summary.releaseReviewRecommended ? `<span class="pill bad">Release gated</span>` : `<span class="pill ok">Release signals ok</span>`,
+  ].join(" ");
+  const decisionSection = `<div class="section-title">Signals &amp; Alerts</div>${metricRow}<div class="card">${signalRows}<p style="margin:.8em 0 0">${reviewPills}</p></div>`;
 
-  return page(orgName, `<h1>${escapeHtml(orgName)} Command Center</h1><p><span class="pill ${statusClass(org.status)}">${escapeHtml(org.status)}</span> <span class="pill sel">technical founder / product view</span></p><details><summary style="cursor:pointer;font-size:.92em;color:#9ca3af">Filesystem</summary><p class="muted">${escapeHtml(org.path)}</p><p><a href="file://${escapeHtml(org.reportPath || "")}">Latest report</a> · <a href="file://${escapeHtml(path.join(org.path, "org-sync-notes", "Home.md"))}">Obsidian Home</a></p></details>${founderLinks}${warningHtml}${intelligenceHtml}${founderHub}${executiveHtml}${decisionSection}${agencySection}${developerSection}${weeklySummarySection}<h2>Product Capability Map</h2><div class="grid">${capabilityCards}</div><details><summary style="cursor:pointer;font-size:1.1em;font-weight:600;padding:6px 0">Projects (${repos.length})</summary><div class="grid">${repoCards || "<div class='card'>No repo signals yet.</div>"}</div></details>${runSelector}`);
+  // ── PAGE ASSEMBLY ────────────────────────────────────────────────────────────
+  return page(orgName, `
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap">
+  <h1 style="margin:0">${escapeHtml(orgName)}</h1>
+  <span class="pill ${statusClass(org.status)}">${escapeHtml(org.status)}</span>
+  <a href="/" style="font-size:.88em;color:#94a3b8">← All orgs</a>
+</div>
+<p style="margin:.3em 0 14px"><a href="/orgs/${encodeURIComponent(orgName)}/founder" class="pill sel">Founder hub</a> <a href="/orgs/${encodeURIComponent(orgName)}/vision/todos" class="pill">Todos</a> <a href="/orgs/${encodeURIComponent(orgName)}/vision/gtm-experiments" class="pill">GTM ledger</a> <a href="/orgs/${encodeURIComponent(orgName)}/product" class="pill">Product overview</a></p>
+${warningHtml}
+${digestHtml}
+${decisionSection}
+${agencySection}
+<div class="section-title">Founder Hub</div>
+${founderHub}
+<details><summary>Intelligence &amp; Sync Status</summary>${intelligenceHtml}</details>
+<details><summary>Developer Activity</summary>${developerSection}</details>
+${weeklySummarySection ? `<details><summary>Weekly Intelligence</summary>${weeklySummarySection}</details>` : ""}
+<details><summary>Product Capability Map</summary><div class="grid">${capabilityCards}</div></details>
+<details><summary>Projects (${repos.length})</summary><div class="grid">${repoCards || "<div class='card'>No repo signals yet.</div>"}</div></details>
+${runSelector}
+<details><summary style="color:#4b5563;font-size:.85em">Raw filesystem paths</summary><p class="muted" style="font-size:.82em">${escapeHtml(org.path)}</p></details>
+`);
 }
 
 function renderProjectRunDetail(orgName, repoName, runId, summary) {

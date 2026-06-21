@@ -6,8 +6,7 @@ import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
-
-const DEFAULT_PROJECTS_ROOT = "/Users/chandan/Desktop/projects";
+import { resolveProjectsRoot } from "./lib/org-config.mjs";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const toolRoot = path.dirname(scriptDir);
@@ -21,7 +20,7 @@ Usage:
   org-sync-all --include upandup_org
 
 Options:
-  --projects-root <path>   Folder containing *_org folders. Default: ${DEFAULT_PROJECTS_ROOT}.
+  --projects-root <path>   Folder containing *_org folders. Default: cwd (or ORG_SYNC_PROJECTS_ROOT env).
   --include <org>          Include only this org folder name. Can be repeated.
   --exclude <org>          Exclude this org folder name. Can be repeated.
   --org-args <args>        Args passed to org-sync. Default: --since "1 day ago" --no-pull.
@@ -36,7 +35,7 @@ Options:
 
 function parseArgs(argv) {
   const options = {
-    projectsRoot: process.env.ORG_SYNC_PROJECTS_ROOT || DEFAULT_PROJECTS_ROOT,
+    projectsRoot: resolveProjectsRoot(null),
     includes: [],
     excludes: [],
     orgArgs: process.env.ORG_SYNC_ALL_ORG_ARGS || '--since "1 day ago" --no-pull',

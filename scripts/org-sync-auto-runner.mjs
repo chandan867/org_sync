@@ -7,7 +7,7 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
-const DEFAULT_PROJECTS_ROOT = "/Users/chandan/Desktop/projects";
+const DEFAULT_PROJECTS_ROOT = process.env.ORG_SYNC_PROJECTS_ROOT || process.env.ORG_SYNC_AUTO_PROJECTS_ROOT || process.cwd();
 const LOCK_STALE_MS = 2 * 60 * 60 * 1000;
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
