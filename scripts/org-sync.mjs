@@ -631,15 +631,15 @@ function aggregateDevelopers(repos) {
   return Array.from(byKey.values()).sort((a, b) => b.commits - a.commits || a.name.localeCompare(b.name));
 }
 
-function buildAgencyBriefs(runSummary, founderSignals, outputDir) {
+async function buildAgencyBriefs(runSummary, founderSignals, outputDir, options) {
   const briefsDir = path.join(outputDir, "agency-briefs");
   const devs = aggregateDevelopers(runSummary.repos);
 
-  function briefContext(domain, questions) {
+  function buildEvidenceContext(domain) {
     const changedRepos = founderSignals.repos.filter((r) => (r.commits || []).length > 0 || (r.changedFiles || []).length > 0);
     const repoTable = changedRepos.map((r) => {
-      const flows = (r.productFlows || []).map((f) => f.label).join(", ") || "none";
-      const risks = (r.riskTags || []).map((t) => t.label).join(", ") || "none";
+      const flows = (r.productFlows || []).map((f) => `${f.label} (${f.severity}, ${f.confidence ?? "?"}%)`).join(", ") || "none";
+      const risks = (r.riskTags || []).map((t) => `${t.label} (${t.severity}, ${t.confidence ?? "?"}%)`).join(", ") || "none";
       const commits = (r.commits || []).length;
       return "- **" + r.name + "** (" + commits + " commits): flows=[" + flows + "], risks=[" + risks + "]";
     }).join("\n") || "No committed changes in this window.";
@@ -650,127 +650,219 @@ function buildAgencyBriefs(runSummary, founderSignals, outputDir) {
     const allFlows = founderSignals.repos.flatMap(function (r) { return r.productFlows || []; });
     const uniqueFlows = [...new Map(allFlows.map(function (f) { return [f.id, f]; })).values()];
 
-    var flowLines = uniqueFlows.length
-      ? uniqueFlows.map(function (f) { return "- " + f.label + " (" + f.severity + ")"; }).join("\n")
+    const flowLines = uniqueFlows.length
+      ? uniqueFlows.map(function (f) { return "- " + f.label + " (" + f.severity + ", " + (f.confidence ?? "?") + "% confidence)"; }).join("\n")
       : "- None detected.";
-    var riskLines = founderSignals.repos.flatMap(function (r) {
+    const riskLines = founderSignals.repos.flatMap(function (r) {
       return (r.riskTags || []).map(function (t) {
-        return "- " + t.label + " (" + t.severity + ") - repo: " + r.name;
+        return "- " + t.label + " (" + t.severity + ", " + (t.confidence ?? "?") + "% confidence) — repo: " + r.name;
       });
     }).join("\n") || "- None detected.";
-    var baseStr = founderSignals.window.baseline ? " (baseline: " + founderSignals.window.baseline + ")" : "";
+    const baseStr = founderSignals.window.baseline ? " (baseline: " + founderSignals.window.baseline + ")" : "";
 
-    return "\n## Run Context\n\n"
-      + "- Org root: " + founderSignals.orgRoot + "\n"
+    return "## Org Context\n\n"
+      + "- Org: " + founderSignals.orgRoot + "\n"
       + "- Date: " + founderSignals.generatedAt.slice(0, 10) + "\n"
       + "- Window: " + founderSignals.window.since + baseStr + "\n"
-      + "- Report: " + founderSignals.reportPath + "\n"
-      + "- Domain: " + domain + "\n\n"
+      + "- Domain focus: " + domain + "\n\n"
       + "## Changed Repositories\n\n" + repoTable + "\n\n"
       + "## Product Flows Touched\n\n" + flowLines + "\n\n"
       + "## Risk Tags\n\n" + riskLines + "\n\n"
-      + "## Developer-Wise Changes\n\n" + devTableLines + "\n\n"
-      + "## Domain-Specific Questions\n\n" + questions + "\n\n"
-      + "## Guardrails\n\n"
-      + "- Base analysis **only** on the evidence above. Do not infer behavior from file paths or commit messages alone.\n"
-      + "- Flag uncertainties explicitly as not enough evidence.\n"
-      + "- Do not speculate on business impact, revenue, or customer sentiment unless explicitly stated in evidence.\n"
-      + "- Do not generate code, patches, or implementation plans unless asked.\n"
-      + "- If critical information is missing, state what is needed rather than filling gaps with assumptions.\n";
+      + "## Developers\n\n" + devTableLines;
   }
 
-  var productQuestions = "- Which product flows were touched and how do they affect the user journey?\n"
-    + "- Are there any breaking changes or behavioral shifts for existing users?\n"
-    + "- What feature areas need QA attention based on changed files?\n"
-    + "- Which product metrics (engagement, retention, conversion) could be impacted by these changes?\n"
-    + "- Is there enough test coverage for the changed flows?\n"
-    + "- What dependencies or integration points should be verified before the next release?";
-  var gtmQuestions = "- Which product changes create new sales stories or demo talking points?\n"
-    + "- Are any changes risky to demonstrate or sell before further validation?\n"
-    + "- Do these changes unblock new customer segments or use cases?\n"
-    + "- What product narratives became stronger or weaker based on engineering evidence?\n"
-    + "- Are there any competitive positioning implications?\n"
-    + "- Should pricing, packaging, or messaging be adjusted based on these changes?";
-  var salesQuestions = "- Which changes are demo-ready and which are not?\n"
-    + "- What objections could these changes address or introduce?\n"
-    + "- Are there new integrations, APIs, or capabilities available for prospects?\n"
-    + "- Should any existing pipeline deals be updated based on product changes?\n"
-    + "- What competitive advantages or gaps do these changes create?\n"
-    + "- Are there compliance, security, or reliability changes that affect enterprise sales?";
-  var marketingQuestions = "- What content angles (blog posts, LinkedIn, case studies) do these changes support?\n"
-    + "- Which product narratives gained evidence or became stronger?\n"
-    + "- What proof points are now available (performance, security, scale)?\n"
-    + "- Are there any customer-facing announcements warranted?\n"
-    + "- Should the website, docs, or demos be updated based on these changes?\n"
-    + "- What social proof or community content could be generated from recent progress?";
-  var engineeringQuestions = "- What is the technical risk profile of these changes?\n"
-    + "- Are there database schema changes, API contract changes, or security implications?\n"
-    + "- Which repos need code review, additional tests, or manual QA?\n"
-    + "- Are there architectural or dependency concerns across repos?\n"
-    + "- What monitoring, logging, or observability changes are needed?\n"
-    + "- Should a release be gated on any specific fix or validation?";
-  var csQuestions = "- Are there any changes that affect how customers use the product day-to-day?\n"
-    + "- Which changes might require customer communication, docs updates, or onboarding changes?\n"
-    + "- Are there known issues, regressions, or feature gaps in the changed areas?\n"
-    + "- Should customer support be briefed on any behavioral or UI changes?\n"
-    + "- What customer-facing metrics (uptime, response times, error rates) may be affected?\n"
-    + "- Are there migration steps, breaking changes, or deprecations customers should know about?";
+  function buildBriefPrompt(domainLabel, domainRole, outputSections, evidenceContext, extraContext) {
+    return `# Agency Brief Prompt: ${domainLabel}
 
-  var productExtra = founderSignals.repos.map(function (r) {
-    var files = (r.changedFiles || []).length
+You are the ${domainRole} for this company. You have just received the engineering sync report for the past cycle.
+Your job is to produce the **${domainLabel} Agency Brief** — a focused, actionable document for ${domainLabel.toLowerCase()} decision-making.
+
+Base your brief ONLY on the evidence below. Do not invent facts. Flag gaps explicitly as "insufficient evidence".
+
+${evidenceContext}${extraContext ? "\n\n" + extraContext : ""}
+
+## Required Output
+
+Write a Markdown document titled "# Agency Brief: ${domainLabel}" with these sections:
+
+${outputSections}
+
+Keep each section tight and actionable. Write for a busy founder — no filler, no padding.
+`;
+  }
+
+  const productExtra = founderSignals.repos.map(function (r) {
+    const files = (r.changedFiles || []).length
       ? r.changedFiles.map(function (f) { return "- " + f.status + " " + f.path; }).join("\n")
       : "- No changed files.";
     return "### " + r.name + "\n" + files;
   }).join("\n\n");
 
-  var devDetails = devs.map(function (d) {
-    var subjects = d.commitSubjects.length ? d.commitSubjects.map(function (s) { return "  - " + s; }).join("\n") : "";
-    var flows = d.productFlows.map(function (f) { return f.label + " (" + f.severity + ")"; }).join(", ") || "none";
-    var risks = d.riskTags.map(function (t) { return t.label + " (" + t.severity + ")"; }).join(", ") || "none";
+  const devDetails = devs.map(function (d) {
+    const subjects = d.commitSubjects.length ? d.commitSubjects.map(function (s) { return "  - " + s; }).join("\n") : "";
+    const flows = d.productFlows.map(function (f) { return f.label + " (" + f.severity + ")"; }).join(", ") || "none";
+    const risks = d.riskTags.map(function (t) { return t.label + " (" + t.severity + ")"; }).join(", ") || "none";
     return "### " + d.name + " <" + d.email + ">\n\n"
       + "- Commits: " + d.commits + "\n"
       + "- Repos: " + d.repos.join(", ") + "\n"
-      + "- Subjects:\n" + subjects + "\n"
+      + "- Commit subjects:\n" + (subjects || "  - (none)") + "\n"
       + "- Related product flows: " + flows + "\n"
       + "- Related risk tags: " + risks + "\n";
   }).join("\n") || "No developer data found.";
 
-  var productMd = "# Agency Brief: Product\n\n"
-    + "This brief is generated by `org-sync` in deterministic mode (no LLM invoked). It provides structured evidence for product strategy reasoning.\n\n"
-    + briefContext("Product", productQuestions) + "\n\n"
-    + "## Changed File Summary by Repo\n\n"
-    + productExtra + "\n";
+  const BRIEFS = [
+    {
+      file: "product.md",
+      domain: "Product",
+      role: "Head of Product",
+      sections: `### What Changed (Product Lens)
+One paragraph: which user journeys or product capabilities changed? What does the product do differently now?
 
-  var gtmMd = "# Agency Brief: GTM\n\n"
-    + "This brief is generated by `org-sync` in deterministic mode (no LLM invoked). It provides structured evidence for GTM/strategy reasoning.\n\n"
-    + briefContext("GTM", gtmQuestions) + "\n";
+### Breaking Changes / Behavioral Shifts
+List any breaking changes or behavior shifts for existing users. If none, say so explicitly.
 
-  var salesMd = "# Agency Brief: Sales\n\n"
-    + "This brief is generated by `org-sync` in deterministic mode (no LLM invoked). It provides structured evidence for sales reasoning.\n\n"
-    + briefContext("Sales", salesQuestions) + "\n";
+### QA Attention Areas
+Which feature areas need QA? Be specific about flows and repos.
 
-  var marketingMd = "# Agency Brief: Marketing\n\n"
-    + "This brief is generated by `org-sync` in deterministic mode (no LLM invoked). It provides structured evidence for marketing/content reasoning.\n\n"
-    + briefContext("Marketing", marketingQuestions) + "\n";
+### Product Metrics at Risk
+Which metrics (engagement, retention, conversion, activation) could be affected?
 
-  var engineeringMd = "# Agency Brief: Engineering\n\n"
-    + "This brief is generated by `org-sync` in deterministic mode (no LLM invoked). It provides structured evidence for engineering/technical reasoning.\n\n"
-    + briefContext("Engineering", engineeringQuestions) + "\n\n"
-    + "## Developer Details\n\n"
-    + devDetails + "\n";
+### Release Gate Checklist
+What must be verified before the next release? List as checkboxes.`,
+      extra: "## Changed File Summary by Repo\n\n" + productExtra,
+    },
+    {
+      file: "gtm.md",
+      domain: "GTM",
+      role: "Head of GTM / Growth",
+      sections: `### New Sales Stories / Demo Talking Points
+Which changes create new demo moments or sales proof points?
 
-  var csMd = "# Agency Brief: Customer Success\n\n"
-    + "This brief is generated by `org-sync` in deterministic mode (no LLM invoked). It provides structured evidence for customer success/support reasoning.\n\n"
-    + briefContext("Customer Success", csQuestions) + "\n";
+### Risky to Demo or Sell (pre-validation)
+Which changes should NOT be demoed or mentioned until further validated?
 
-  const briefs = {
-    "product.md": productMd,
-    "gtm.md": gtmMd,
-    "sales.md": salesMd,
-    "marketing.md": marketingMd,
-    "engineering.md": engineeringMd,
-    "customer-success.md": csMd,
-  };
+### New Customer Segments or Use Cases Unlocked
+Do these changes open new markets or remove blockers for specific ICPs?
+
+### Narrative Strength / Weakness
+Which product narratives (speed, reliability, platform, etc.) got stronger or weaker?
+
+### Pricing / Packaging / Messaging Implications
+Should messaging, pricing tiers, or packaging be updated?`,
+      extra: null,
+    },
+    {
+      file: "sales.md",
+      domain: "Sales",
+      role: "Head of Sales",
+      sections: `### Demo-Ready vs Not-Ready (table)
+| Repo / Feature | Demo Ready? | Notes |
+
+### Objection Handling Updates
+Which new objections could these changes introduce, and which existing objections do they address?
+
+### New Capabilities for Prospects
+New integrations, APIs, or features that sales can offer.
+
+### Pipeline Deal Updates
+Should any open deals be accelerated, decelerated, or have their close criteria updated?
+
+### Enterprise Sales Considerations
+Any compliance, security, reliability, or SLA changes relevant to enterprise accounts?`,
+      extra: null,
+    },
+    {
+      file: "marketing.md",
+      domain: "Marketing",
+      role: "Head of Marketing",
+      sections: `### Content Angles Available
+What blog posts, LinkedIn posts, or case study angles does this evidence support? List 3–5 specific ideas.
+
+### Proof Points Gained
+What new proof points (performance benchmarks, feature milestones, technical depth) are now available?
+
+### Customer-Facing Announcements
+Should any changes be announced publicly? What tone and channel?
+
+### Website / Docs / Demo Updates Needed
+What marketing assets need updating based on these changes?
+
+### Social Proof / Community Content
+What developer or user community content could be generated from recent progress?`,
+      extra: null,
+    },
+    {
+      file: "engineering.md",
+      domain: "Engineering",
+      role: "Engineering Lead / CTO",
+      sections: `### Technical Risk Summary (HIGH / MEDIUM / LOW per repo)
+| Repo | Risk | Key Concern |
+
+### Critical Findings
+Schema changes, API contract breaks, auth/security implications — anything that could cause incidents.
+
+### Code Review and QA Gates
+Which repos need mandatory review or manual QA before shipping? Why?
+
+### Architectural Concerns
+Cross-repo dependencies, shared contract changes, or structural debt introduced.
+
+### Observability / Monitoring Gaps
+What monitoring, logging, or alerting is missing or needs updating?
+
+### Release Gate Recommendation
+Should any release be blocked? If yes, state exactly what condition must be met.`,
+      extra: "## Developer Activity Detail\n\n" + devDetails,
+    },
+    {
+      file: "customer-success.md",
+      domain: "Customer Success",
+      role: "Head of Customer Success",
+      sections: `### Customer-Facing Changes
+Which changes affect how customers use the product day-to-day?
+
+### Communication Required
+Which changes need proactive customer communication, changelog entries, or support docs?
+
+### Known Issues / Regressions in Changed Areas
+List any regressions or known gaps introduced. If none confirmed, say so.
+
+### Support Team Briefing
+What should support know about behavioral or UI changes before customers call in?
+
+### Customer Health Risks
+What customer-facing metrics (uptime, response time, error rates) may be affected? For which segments?
+
+### Breaking Changes / Migration Steps
+Are there deprecations, API changes, or migration steps customers must take?`,
+      extra: null,
+    },
+  ];
+
+  const evidenceContext = buildEvidenceContext("(per-domain, see prompt)");
+  const briefs = {};
+
+  await mkdir(briefsDir, { recursive: true });
+
+  for (const brief of BRIEFS) {
+    const domainEvidence = buildEvidenceContext(brief.domain);
+    if (options?.llm) {
+      const prompt = buildBriefPrompt(brief.domain, brief.role, brief.sections, domainEvidence, brief.extra);
+      const promptPath = path.join(briefsDir, `${brief.file.replace(".md", "")}-prompt.md`);
+      await writeFile(promptPath, prompt, "utf8");
+      console.log(`\n[agency-brief:${brief.domain.toLowerCase()}] Invoking OpenCode...`);
+      const result = await invokeOpenCode(promptPath, path.join(briefsDir, brief.file), options);
+      if (result.status === "completed") {
+        briefs[brief.file] = null; // already written by invokeOpenCode
+        continue;
+      }
+      console.warn(`[agency-brief:${brief.domain.toLowerCase()}] OpenCode failed (${result.error || result.status}), falling back to evidence.`);
+    }
+    // Fallback: structured evidence brief
+    const header = `# Agency Brief: ${brief.domain}\n\n`
+      + `_Structured evidence — run without --no-llm for LLM-synthesized analysis._\n\n`;
+    briefs[brief.file] = header + domainEvidence + (brief.extra ? "\n\n" + brief.extra : "") + "\n";
+  }
 
   return { briefsDir, briefs };
 }
@@ -1388,12 +1480,11 @@ async function main() {
 
   const developers = aggregateDevelopers(runSummary.repos);
 
-  const { briefsDir, briefs } = buildAgencyBriefs(runSummary, founderSignals, options.outputDir);
-  await mkdir(briefsDir, { recursive: true });
+  const { briefsDir, briefs } = await buildAgencyBriefs(runSummary, founderSignals, options.outputDir, options);
   const agencyBriefIndex = buildAgencyBriefIndex();
   await writeJson(path.join(briefsDir, "index.json"), agencyBriefIndex);
   for (const [fileName, content] of Object.entries(briefs)) {
-    await writeFile(path.join(briefsDir, fileName), content, "utf8");
+    if (content !== null) await writeFile(path.join(briefsDir, fileName), content, "utf8");
   }
   const agencyBriefsPath = briefsDir;
 
