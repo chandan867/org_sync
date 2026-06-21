@@ -491,23 +491,34 @@ async function generatedAtTimeFromSummary(orgPath, runId) {
   }
 }
 
+async function llmStatusFromSummary(orgPath, runId) {
+  const summaryPath = path.join(orgPath, "org-sync-reports", runId, "run-summary.json");
+  if (!existsSync(summaryPath)) return "unknown";
+  try {
+    const data = JSON.parse(await readFile(summaryPath, "utf8"));
+    return data.llm?.status || "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
 async function selectCanonicalRun(orgPath, runIds) {
   if (runIds.length === 0) return null;
   if (runIds.length === 1) return runIds[0];
   const scored = await Promise.all(
     runIds.map(async (id) => {
-      const repoCount = await runSummaryRepoCount(orgPath, id);
-      const completeness = countSafeContent(orgPath, id);
+      const llmStatus = await llmStatusFromSummary(orgPath, id);
       const genAt = await generatedAtTimeFromSummary(orgPath, id);
-      return { id, repoCount, completeness, genAt };
+      const completeness = countSafeContent(orgPath, id);
+      return { id, llmDone: llmStatus === "completed" ? 1 : 0, genAt, completeness };
     })
   );
   scored.sort((a, b) => {
-    if (b.repoCount !== a.repoCount) return b.repoCount - a.repoCount;
-    if (b.completeness !== a.completeness) return b.completeness - a.completeness;
+    if (b.llmDone !== a.llmDone) return b.llmDone - a.llmDone;
     if (a.genAt && b.genAt) return b.genAt.localeCompare(a.genAt);
     if (a.genAt) return -1;
     if (b.genAt) return 1;
+    if (b.completeness !== a.completeness) return b.completeness - a.completeness;
     return b.id.localeCompare(a.id);
   });
   return scored[0].id;
